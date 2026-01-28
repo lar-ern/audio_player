@@ -14,6 +14,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
     @Published var currentTrackName = "No Track Loaded"
     @Published var currentArtist = "Unknown Artist"
+    @Published var currentAlbum = "Unknown Album"
+    @Published var albumArtwork: NSImage?
     @Published var isTrackLoaded = false
 
     private var audioPlayer: AVAudioPlayer?
@@ -31,6 +33,43 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private func updateVolume() {
         audioPlayer?.volume = Float(volume)
         flacDecoder?.setVolume(Float(volume))
+    }
+
+    private func extractMetadata(from url: URL) {
+        let asset = AVAsset(url: url)
+
+        // Extract metadata
+        let metadata = asset.metadata
+
+        var title: String?
+        var artist: String?
+        var album: String?
+        var artwork: NSImage?
+
+        for item in metadata {
+            guard let commonKey = item.commonKey else { continue }
+
+            switch commonKey {
+            case .commonKeyTitle:
+                title = item.stringValue
+            case .commonKeyArtist:
+                artist = item.stringValue
+            case .commonKeyAlbumName:
+                album = item.stringValue
+            case .commonKeyArtwork:
+                if let data = item.dataValue {
+                    artwork = NSImage(data: data)
+                }
+            default:
+                break
+            }
+        }
+
+        // Update published properties
+        currentTrackName = title ?? url.deletingPathExtension().lastPathComponent
+        currentArtist = artist ?? "Unknown Artist"
+        currentAlbum = album ?? "Unknown Album"
+        albumArtwork = artwork
     }
 
     func selectAudioFile() {
@@ -67,6 +106,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         let fileExtension = url.pathExtension.lowercased()
         isFLACTrack = (fileExtension == "flac")
 
+        // Extract metadata first
+        extractMetadata(from: url)
+
         do {
             if isFLACTrack {
                 // Use FLAC decoder for FLAC files
@@ -77,7 +119,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
                 duration = flacDecoder?.duration ?? 0
                 currentTime = 0
-                currentTrackName = url.deletingPathExtension().lastPathComponent
                 isTrackLoaded = true
             } else {
                 // Use AVAudioPlayer for other formats
@@ -88,7 +129,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
                 duration = audioPlayer?.duration ?? 0
                 currentTime = 0
-                currentTrackName = url.deletingPathExtension().lastPathComponent
                 isTrackLoaded = true
             }
 
@@ -107,6 +147,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         flacDecoder = nil
         stopTimer()
         isPlaying = false
+        albumArtwork = nil
     }
 
     func togglePlayPause() {

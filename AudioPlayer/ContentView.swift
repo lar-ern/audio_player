@@ -5,19 +5,27 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            // Album Art Placeholder
+            // Album Art
             ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(LinearGradient(
-                        gradient: Gradient(colors: [.purple, .blue]),
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 250, height: 250)
+                if let artwork = audioPlayer.albumArtwork {
+                    Image(nsImage: artwork)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 250, height: 250)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(LinearGradient(
+                            gradient: Gradient(colors: [.purple, .blue]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                        .frame(width: 250, height: 250)
 
-                Image(systemName: "music.note")
-                    .font(.system(size: 80))
-                    .foregroundColor(.white.opacity(0.8))
+                    Image(systemName: "music.note")
+                        .font(.system(size: 80))
+                        .foregroundColor(.white.opacity(0.8))
+                }
             }
             .shadow(radius: 10)
 
@@ -26,10 +34,17 @@ struct ContentView: View {
                 Text(audioPlayer.currentTrackName)
                     .font(.title2)
                     .fontWeight(.semibold)
+                    .lineLimit(1)
 
                 Text(audioPlayer.currentArtist)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                Text(audioPlayer.currentAlbum)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
 
             // Progress Bar
