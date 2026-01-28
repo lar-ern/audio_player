@@ -124,7 +124,7 @@ enum FLACError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unableToLoadFile(let details):
-            return "Unable to load FLAC file: \\(details)"
+            return "Unable to load FLAC file: \(details)"
         case .notInitialized:
             return "FLAC decoder not properly initialized"
         case .invalidSeekPosition:

@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import AppKit
+import Combine
 
 class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
@@ -39,11 +40,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
         panel.canChooseFiles = true
 
         // Include FLAC files along with other audio formats
-        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .m4a]
+        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio]
         panel.allowsOtherFileTypes = true
-
-        // Add FLAC file extension filter
-        panel.allowedFileTypes = ["mp3", "wav", "aiff", "m4a", "flac", "aac", "mp4"]
 
         panel.begin { [weak self] response in
             if response == .OK {
@@ -96,7 +94,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
             startTimer()
         } catch {
-            print("Error loading audio file: \\(error.localizedDescription)")
+            print("Error loading audio file: \(error.localizedDescription)")
             currentTrackName = "Error Loading Track"
             isTrackLoaded = false
         }
@@ -140,7 +138,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 }
             }
         } catch {
-            print("Error toggling playback: \\(error.localizedDescription)")
+            print("Error toggling playback: \(error.localizedDescription)")
         }
     }
 
@@ -154,7 +152,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 audioPlayer?.currentTime = time
             }
         } catch {
-            print("Error seeking: \\(error.localizedDescription)")
+            print("Error seeking: \(error.localizedDescription)")
         }
     }
 
