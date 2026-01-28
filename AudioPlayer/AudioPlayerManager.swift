@@ -235,7 +235,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
                     // Check if playback has finished
                     if self.currentTime >= self.duration - 0.1 {
-                        self.isPlaying = false
                         self.stopTimer()
                         self.nextTrack()
                     }
