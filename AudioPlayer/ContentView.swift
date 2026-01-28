@@ -45,6 +45,30 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+
+                // Technical info
+                if !audioPlayer.sampleRate.isEmpty || !audioPlayer.bitDepth.isEmpty {
+                    HStack(spacing: 8) {
+                        if !audioPlayer.sampleRate.isEmpty {
+                            Text(audioPlayer.sampleRate)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        if !audioPlayer.bitDepth.isEmpty {
+                            Text(audioPlayer.bitDepth)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Copyright info
+                if !audioPlayer.copyright.isEmpty {
+                    Text(audioPlayer.copyright)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             // Progress Bar

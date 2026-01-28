@@ -15,6 +15,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var currentTrackName = "No Track Loaded"
     @Published var currentArtist = "Unknown Artist"
     @Published var currentAlbum = "Unknown Album"
+    @Published var copyright = ""
+    @Published var sampleRate = ""
+    @Published var bitDepth = ""
     @Published var albumArtwork: NSImage?
     @Published var isTrackLoaded = false
 
@@ -44,6 +47,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         var title: String?
         var artist: String?
         var album: String?
+        var copyrightText: String?
         var artwork: NSImage?
 
         for item in metadata {
@@ -56,6 +60,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 artist = item.stringValue
             case .commonKeyAlbumName:
                 album = item.stringValue
+            case .commonKeyCopyrights:
+                copyrightText = item.stringValue
             case .commonKeyArtwork:
                 if let data = item.dataValue {
                     artwork = NSImage(data: data)
@@ -65,10 +71,33 @@ class AudioPlayerManager: NSObject, ObservableObject {
             }
         }
 
+        // Extract technical audio format information
+        var sampleRateText = ""
+        var bitDepthText = ""
+
+        if let tracks = asset.tracks(withMediaType: .audio).first {
+            if let formatDescriptions = tracks.formatDescriptions as? [CMFormatDescription] {
+                for formatDescription in formatDescriptions {
+                    if let basicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) {
+                        let rate = basicDescription.pointee.mSampleRate
+                        sampleRateText = String(format: "%.1f kHz", rate / 1000.0)
+
+                        let bitsPerChannel = basicDescription.pointee.mBitsPerChannel
+                        if bitsPerChannel > 0 {
+                            bitDepthText = "\(bitsPerChannel)-bit"
+                        }
+                    }
+                }
+            }
+        }
+
         // Update published properties
         currentTrackName = title ?? url.deletingPathExtension().lastPathComponent
         currentArtist = artist ?? "Unknown Artist"
         currentAlbum = album ?? "Unknown Album"
+        copyright = copyrightText ?? ""
+        sampleRate = sampleRateText
+        bitDepth = bitDepthText
         albumArtwork = artwork
     }
 
@@ -148,6 +177,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         stopTimer()
         isPlaying = false
         albumArtwork = nil
+        copyright = ""
+        sampleRate = ""
+        bitDepth = ""
     }
 
     func togglePlayPause() {
