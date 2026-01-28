@@ -7,7 +7,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
-    @Published var volume: Double = 0.5 {
+    @Published var volume: Double = 1.0 {
         didSet {
             updateVolume()
         }
@@ -21,11 +21,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var albumArtwork: NSImage?
     @Published var isTrackLoaded = false
 
+    @Published var playlist: [URL] = []
+    @Published var currentTrackIndex: Int = 0
+
     private var audioPlayer: AVAudioPlayer?
     private var flacDecoder: FLACDecoder?
     private var timer: Timer?
-    private var playlist: [URL] = []
-    private var currentTrackIndex: Int = 0
     private var isFLACTrack = false
     private var flacStartTime: Date?
 
@@ -251,6 +252,32 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 togglePlayPause()
             }
         }
+    }
+
+    func selectTrack(at index: Int) {
+        guard index >= 0 && index < playlist.count else { return }
+        let wasPlaying = isPlaying
+        loadTrack(at: index)
+        if wasPlaying {
+            togglePlayPause()
+        }
+    }
+
+    func clearPlaylist() {
+        stopCurrentTrack()
+        playlist.removeAll()
+        currentTrackIndex = 0
+        currentTrackName = "No Track Loaded"
+        currentArtist = "Unknown Artist"
+        currentAlbum = "Unknown Album"
+        isTrackLoaded = false
+        duration = 0
+        currentTime = 0
+    }
+
+    func getTrackDuration(for url: URL) -> TimeInterval {
+        let asset = AVAsset(url: url)
+        return asset.duration.seconds
     }
 
     private func startTimer() {

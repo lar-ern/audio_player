@@ -127,11 +127,64 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
             }
 
-            // Load Audio Button
-            Button("Load Audio File") {
-                audioPlayer.selectAudioFile()
+            // Clear and Load Buttons
+            HStack(spacing: 10) {
+                Button("Clear List") {
+                    audioPlayer.clearPlaylist()
+                }
+                .buttonStyle(.bordered)
+                .disabled(audioPlayer.playlist.isEmpty)
+
+                Button("Load Audio File") {
+                    audioPlayer.selectAudioFile()
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
+
+            // Playlist
+            if !audioPlayer.playlist.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Playlist")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 5)
+
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
+                                Button(action: {
+                                    audioPlayer.selectTrack(at: index)
+                                }) {
+                                    HStack {
+                                        Text(url.deletingPathExtension().lastPathComponent)
+                                            .font(.caption)
+                                            .lineLimit(1)
+                                            .foregroundColor(index == audioPlayer.currentTrackIndex ? .accentColor : .primary)
+
+                                        Spacer()
+
+                                        Text(timeString(from: audioPlayer.getTrackDuration(for: url)))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(index == audioPlayer.currentTrackIndex ? Color.accentColor.opacity(0.1) : Color.clear)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 150)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.primary.opacity(0.05))
+                    )
+                }
+            }
         }
         .padding(30)
         .frame(width: 400)
