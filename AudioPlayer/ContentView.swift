@@ -152,33 +152,20 @@ struct ContentView: View {
                     ScrollView {
                         VStack(spacing: 2) {
                             ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
-                                Button(action: {
-                                    audioPlayer.selectTrack(at: index)
-                                }) {
-                                    HStack {
-                                        Text(url.deletingPathExtension().lastPathComponent)
-                                            .font(.caption)
-                                            .lineLimit(1)
-                                            .foregroundColor(index == audioPlayer.currentTrackIndex ? .accentColor : .primary)
-
-                                        Spacer()
-
-                                        Text(timeString(from: audioPlayer.getTrackDuration(for: url)))
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .fill(index == audioPlayer.currentTrackIndex ? Color.accentColor.opacity(0.1) : Color.clear)
-                                    )
-                                }
-                                .buttonStyle(.plain)
+                                PlaylistItemView(
+                                    url: url,
+                                    index: index,
+                                    isCurrentTrack: index == audioPlayer.currentTrackIndex,
+                                    previousMetadata: index > 0 ? audioPlayer.getTrackMetadata(for: audioPlayer.playlist[index - 1]) : nil,
+                                    onSelect: {
+                                        audioPlayer.selectTrack(at: index)
+                                    },
+                                    audioPlayer: audioPlayer
+                                )
                             }
                         }
                     }
-                    .frame(maxHeight: 150)
+                    .frame(maxHeight: 200)
                     .background(
                         RoundedRectangle(cornerRadius: 8)
                             .fill(Color.primary.opacity(0.05))
@@ -188,6 +175,62 @@ struct ContentView: View {
         }
         .padding(30)
         .frame(width: 400)
+    }
+
+    private func timeString(from seconds: Double) -> String {
+        let minutes = Int(seconds) / 60
+        let seconds = Int(seconds) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+struct PlaylistItemView: View {
+    let url: URL
+    let index: Int
+    let isCurrentTrack: Bool
+    let previousMetadata: TrackMetadata?
+    let onSelect: () -> Void
+    let audioPlayer: AudioPlayerManager
+
+    var body: some View {
+        let metadata = audioPlayer.getTrackMetadata(for: url)
+        let duration = audioPlayer.getTrackDuration(for: url)
+        let showFullInfo = index == 0 ||
+                          previousMetadata?.artist != metadata.artist ||
+                          previousMetadata?.album != metadata.album
+
+        Button(action: onSelect) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if showFullInfo {
+                        // Show artist and album on first line
+                        Text("\(metadata.artist) • \(metadata.album)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    // Show title
+                    Text(metadata.title)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .foregroundColor(isCurrentTrack ? .accentColor : .primary)
+                }
+
+                Spacer()
+
+                Text(timeString(from: duration))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isCurrentTrack ? Color.accentColor.opacity(0.1) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func timeString(from seconds: Double) -> String {

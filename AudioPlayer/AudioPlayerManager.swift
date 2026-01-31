@@ -3,6 +3,12 @@ import AVFoundation
 import AppKit
 import Combine
 
+struct TrackMetadata {
+    let title: String
+    let artist: String
+    let album: String
+}
+
 class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
@@ -278,6 +284,36 @@ class AudioPlayerManager: NSObject, ObservableObject {
     func getTrackDuration(for url: URL) -> TimeInterval {
         let asset = AVAsset(url: url)
         return asset.duration.seconds
+    }
+
+    func getTrackMetadata(for url: URL) -> TrackMetadata {
+        let asset = AVAsset(url: url)
+        let metadata = asset.metadata
+
+        var title: String?
+        var artist: String?
+        var album: String?
+
+        for item in metadata {
+            guard let commonKey = item.commonKey else { continue }
+
+            switch commonKey {
+            case .commonKeyTitle:
+                title = item.stringValue
+            case .commonKeyArtist:
+                artist = item.stringValue
+            case .commonKeyAlbumName:
+                album = item.stringValue
+            default:
+                break
+            }
+        }
+
+        return TrackMetadata(
+            title: title ?? url.deletingPathExtension().lastPathComponent,
+            artist: artist ?? "Unknown Artist",
+            album: album ?? "Unknown Album"
+        )
     }
 
     private func startTimer() {
