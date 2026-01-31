@@ -6,29 +6,48 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            // Album Art
-            ZStack {
-                if let artwork = audioPlayer.albumArtwork {
-                    Image(nsImage: artwork)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 250, height: 250)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(LinearGradient(
-                            gradient: Gradient(colors: [.purple, .blue]),
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                        .frame(width: 250, height: 250)
+            // Album Art with Volume Control
+            HStack(spacing: 20) {
+                // Vertical Volume Control
+                VStack(spacing: 10) {
+                    Image(systemName: "speaker.wave.3.fill")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
 
-                    Image(systemName: "music.note")
-                        .font(.system(size: 80))
-                        .foregroundColor(.white.opacity(0.8))
+                    Slider(value: $audioPlayer.volume, in: 0...1)
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 40, height: 200)
+
+                    Image(systemName: "speaker.fill")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
                 }
+                .frame(width: 40)
+
+                // Album Art
+                ZStack {
+                    if let artwork = audioPlayer.albumArtwork {
+                        Image(nsImage: artwork)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 250, height: 250)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(LinearGradient(
+                                gradient: Gradient(colors: [.purple, .blue]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ))
+                            .frame(width: 250, height: 250)
+
+                        Image(systemName: "music.note")
+                            .font(.system(size: 80))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                }
+                .shadow(radius: 10)
             }
-            .shadow(radius: 10)
 
             // Track Info
             VStack(spacing: 5) {
@@ -119,18 +138,6 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
 
-            // Volume Control
-            HStack {
-                Image(systemName: "speaker.fill")
-                    .foregroundColor(.secondary)
-
-                Slider(value: $audioPlayer.volume, in: 0...1)
-                    .frame(width: 150)
-
-                Image(systemName: "speaker.wave.3.fill")
-                    .foregroundColor(.secondary)
-            }
-
             // Clear and Load Buttons
             HStack(spacing: 10) {
                 Button("Clear List") {
@@ -191,6 +198,7 @@ struct ContentView: View {
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(Color.primary.opacity(0.05))
                         )
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
             }
