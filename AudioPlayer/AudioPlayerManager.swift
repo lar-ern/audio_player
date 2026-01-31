@@ -120,10 +120,14 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
         panel.begin { [weak self] response in
             if response == .OK {
-                self?.playlist = panel.urls
-                if !panel.urls.isEmpty {
-                    self?.currentTrackIndex = 0
-                    self?.loadTrack(at: 0)
+                guard let self = self else { return }
+                let wasEmpty = self.playlist.isEmpty
+                self.playlist.append(contentsOf: panel.urls)
+
+                // If playlist was empty, start playing the first newly added track
+                if wasEmpty && !panel.urls.isEmpty {
+                    self.currentTrackIndex = 0
+                    self.loadTrack(at: 0)
                 }
             }
         }
