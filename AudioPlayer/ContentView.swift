@@ -16,7 +16,7 @@ struct ContentView: View {
 
                     Slider(value: $audioPlayer.volume, in: 0...1)
                         .rotationEffect(.degrees(-90))
-                        .frame(width: 40, height: 250)
+                        .frame(width: 250, height: 40)
 
                     Image(systemName: "speaker.fill")
                         .foregroundColor(.secondary)
@@ -202,7 +202,8 @@ struct ContentView: View {
             }
         }
         .padding(30)
-        .frame(width: 500)
+        .frame(minWidth: 500, maxWidth: 500)
+        .animation(.easeInOut(duration: 0.3), value: isPlaylistExpanded)
     }
 
     private func timeString(from seconds: Double) -> String {
