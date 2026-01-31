@@ -16,13 +16,13 @@ struct ContentView: View {
 
                     Slider(value: $audioPlayer.volume, in: 0...1)
                         .rotationEffect(.degrees(-90))
-                        .frame(width: 40, height: 200)
+                        .frame(width: 40, height: 250)
 
                     Image(systemName: "speaker.fill")
                         .foregroundColor(.secondary)
                         .font(.caption)
                 }
-                .frame(width: 40)
+                .frame(width: 40, height: 250)
 
                 // Album Art
                 ZStack {
@@ -164,7 +164,7 @@ struct ContentView: View {
                         Spacer()
 
                         Button(action: {
-                            withAnimation {
+                            withAnimation(.easeInOut(duration: 0.3)) {
                                 isPlaylistExpanded.toggle()
                             }
                         }) {
@@ -176,30 +176,28 @@ struct ContentView: View {
                         .padding(.trailing, 5)
                     }
 
-                    if isPlaylistExpanded {
-                        ScrollView {
-                            VStack(spacing: 2) {
-                                ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
-                                    PlaylistItemView(
-                                        url: url,
-                                        index: index,
-                                        isCurrentTrack: index == audioPlayer.currentTrackIndex,
-                                        previousMetadata: index > 0 ? audioPlayer.getTrackMetadata(for: audioPlayer.playlist[index - 1]) : nil,
-                                        onSelect: {
-                                            audioPlayer.selectTrack(at: index)
-                                        },
-                                        audioPlayer: audioPlayer
-                                    )
-                                }
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
+                                PlaylistItemView(
+                                    url: url,
+                                    index: index,
+                                    isCurrentTrack: index == audioPlayer.currentTrackIndex,
+                                    previousMetadata: index > 0 ? audioPlayer.getTrackMetadata(for: audioPlayer.playlist[index - 1]) : nil,
+                                    onSelect: {
+                                        audioPlayer.selectTrack(at: index)
+                                    },
+                                    audioPlayer: audioPlayer
+                                )
                             }
                         }
-                        .frame(maxHeight: 200)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.primary.opacity(0.05))
-                        )
-                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
+                    .frame(maxHeight: isPlaylistExpanded ? 200 : 0)
+                    .opacity(isPlaylistExpanded ? 1 : 0)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.primary.opacity(0.05))
+                    )
                 }
             }
         }
