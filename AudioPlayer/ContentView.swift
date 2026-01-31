@@ -9,18 +9,23 @@ struct ContentView: View {
             // Album Art with Volume Control
             HStack(spacing: 20) {
                 // Vertical Volume Control
-                VStack(spacing: 10) {
+                VStack(spacing: 0) {
+                    // Full volume icon - 10% height (25px)
                     Image(systemName: "speaker.wave.3.fill")
                         .foregroundColor(.secondary)
                         .font(.caption)
+                        .frame(height: 25)
 
+                    // Volume slider - 80% height (200px)
                     Slider(value: $audioPlayer.volume, in: 0...1)
                         .rotationEffect(.degrees(-90))
-                        .frame(width: 250, height: 40)
+                        .frame(width: 200, height: 40)
 
+                    // No sound icon - 10% height (25px)
                     Image(systemName: "speaker.fill")
                         .foregroundColor(.secondary)
                         .font(.caption)
+                        .frame(height: 25)
                 }
                 .frame(width: 40, height: 250)
 
