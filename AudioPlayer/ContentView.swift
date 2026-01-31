@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var audioPlayer = AudioPlayerManager()
+    @State private var isPlaylistExpanded = true
 
     var body: some View {
         VStack(spacing: 20) {
@@ -99,18 +100,21 @@ struct ContentView: View {
                 Button(action: audioPlayer.previousTrack) {
                     Image(systemName: "backward.fill")
                         .font(.title2)
+                        .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
 
                 Button(action: audioPlayer.togglePlayPause) {
                     Image(systemName: audioPlayer.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 50))
+                        .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
 
                 Button(action: audioPlayer.nextTrack) {
                     Image(systemName: "forward.fill")
                         .font(.title2)
+                        .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
             }
@@ -144,37 +148,55 @@ struct ContentView: View {
             // Playlist
             if !audioPlayer.playlist.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Playlist")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 5)
+                    HStack {
+                        Text("Playlist")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 5)
 
-                    ScrollView {
-                        VStack(spacing: 2) {
-                            ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
-                                PlaylistItemView(
-                                    url: url,
-                                    index: index,
-                                    isCurrentTrack: index == audioPlayer.currentTrackIndex,
-                                    previousMetadata: index > 0 ? audioPlayer.getTrackMetadata(for: audioPlayer.playlist[index - 1]) : nil,
-                                    onSelect: {
-                                        audioPlayer.selectTrack(at: index)
-                                    },
-                                    audioPlayer: audioPlayer
-                                )
+                        Spacer()
+
+                        Button(action: {
+                            withAnimation {
+                                isPlaylistExpanded.toggle()
+                            }
+                        }) {
+                            Image(systemName: isPlaylistExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 5)
+                    }
+
+                    if isPlaylistExpanded {
+                        ScrollView {
+                            VStack(spacing: 2) {
+                                ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
+                                    PlaylistItemView(
+                                        url: url,
+                                        index: index,
+                                        isCurrentTrack: index == audioPlayer.currentTrackIndex,
+                                        previousMetadata: index > 0 ? audioPlayer.getTrackMetadata(for: audioPlayer.playlist[index - 1]) : nil,
+                                        onSelect: {
+                                            audioPlayer.selectTrack(at: index)
+                                        },
+                                        audioPlayer: audioPlayer
+                                    )
+                                }
                             }
                         }
+                        .frame(maxHeight: 200)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.primary.opacity(0.05))
+                        )
                     }
-                    .frame(maxHeight: 200)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.primary.opacity(0.05))
-                    )
                 }
             }
         }
         .padding(30)
-        .frame(width: 400)
+        .frame(width: 500)
     }
 
     private func timeString(from seconds: Double) -> String {
@@ -210,11 +232,15 @@ struct PlaylistItemView: View {
                             .lineLimit(1)
                     }
 
-                    // Show title
-                    Text(metadata.title)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .foregroundColor(isCurrentTrack ? .accentColor : .primary)
+                    // Show title with 2-character indent
+                    HStack(spacing: 0) {
+                        Text("  ")
+                            .font(.caption)
+                        Text(metadata.title)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundColor(isCurrentTrack ? .accentColor : .primary)
+                    }
                 }
 
                 Spacer()
