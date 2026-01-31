@@ -209,6 +209,7 @@ struct ContentView: View {
         }
         .padding(30)
         .frame(width: 500)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func timeString(from seconds: Double) -> String {
