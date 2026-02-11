@@ -1,35 +1,17 @@
 import SwiftUI
+import AVKit
 
 struct ContentView: View {
-    @StateObject private var audioPlayer = AudioPlayerManager()
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
     @State private var isPlaylistExpanded = true
+    @State private var showVolumePopup = false
+    @State private var showEQPopup = false
+    @State private var showSettingsPopup = false
 
     var body: some View {
         VStack(spacing: 20) {
-            // Album Art with Volume Control
-            HStack(spacing: 20) {
-                // Vertical Volume Control
-                VStack(spacing: 0) {
-                    // Full volume icon - 10% height (25px)
-                    Image(systemName: "speaker.wave.3.fill")
-                        .foregroundColor(.secondary)
-                        .font(.caption)
-                        .frame(width: 40, height: 25)
-
-                    // Volume slider - 80% height (200px)
-                    Slider(value: $audioPlayer.volume, in: 0...1)
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 200, height: 40)
-                        .frame(width: 40, height: 200)
-
-                    // No sound icon - 10% height (25px)
-                    Image(systemName: "speaker.fill")
-                        .foregroundColor(.secondary)
-                        .font(.caption)
-                        .frame(width: 40, height: 25)
-                }
-                .frame(width: 40, height: 250)
-
+            // Album Art with overlay icons
+            ZStack {
                 // Album Art
                 ZStack {
                     if let artwork = audioPlayer.albumArtwork {
@@ -41,7 +23,11 @@ struct ContentView: View {
                     } else {
                         RoundedRectangle(cornerRadius: 12)
                             .fill(LinearGradient(
-                                gradient: Gradient(colors: [.purple, .blue]),
+                                gradient: Gradient(colors: [
+                                    Color(white: 0.45),
+                                    Color(white: 0.30),
+                                    Color(white: 0.20)
+                                ]),
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ))
@@ -53,6 +39,78 @@ struct ContentView: View {
                     }
                 }
                 .shadow(radius: 10)
+                .overlay(alignment: .topLeading) {
+                    // Settings icon
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showSettingsPopup.toggle()
+                        }
+                    }) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.black.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                    .popover(isPresented: $showSettingsPopup, arrowEdge: .leading) {
+                        SettingsPopoverView(gapDuration: $audioPlayer.gapDuration)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    // AirPlay picker
+                    AirPlayPickerView()
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                        .padding(8)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    // EQ icon
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showEQPopup.toggle()
+                        }
+                    }) {
+                        Image(systemName: "slider.vertical.3")
+                            .font(.system(size: 14))
+                            .foregroundColor(audioPlayer.eqEnabled ? Color(white: 0.75) : .white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.black.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                    .popover(isPresented: $showEQPopup, arrowEdge: .leading) {
+                        EQPopoverView(
+                            eqEnabled: $audioPlayer.eqEnabled,
+                            bassGain: $audioPlayer.bassGain,
+                            trebleGain: $audioPlayer.trebleGain
+                        )
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    // Volume speaker icon
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showVolumePopup.toggle()
+                        }
+                    }) {
+                        Image(systemName: volumeIcon)
+                            .font(.system(size: 14))
+                            .foregroundColor(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.black.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                    .popover(isPresented: $showVolumePopup, arrowEdge: .trailing) {
+                        VolumePopoverView(volume: $audioPlayer.volume)
+                    }
+                }
             }
 
             // Track Info
@@ -64,12 +122,12 @@ struct ContentView: View {
 
                 Text(audioPlayer.currentArtist)
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Color(white: 0.55))
                     .lineLimit(1)
 
                 Text(audioPlayer.currentAlbum)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Color(white: 0.50))
                     .lineLimit(1)
 
                 // Technical info
@@ -104,6 +162,7 @@ struct ContentView: View {
                         audioPlayer.seek(to: audioPlayer.currentTime)
                     }
                 }
+                .tint(Color(white: 0.50))
                 .disabled(!audioPlayer.isTrackLoaded)
 
                 HStack {
@@ -125,6 +184,7 @@ struct ContentView: View {
                 Button(action: audioPlayer.previousTrack) {
                     Image(systemName: "backward.fill")
                         .font(.title2)
+                        .foregroundColor(Color(white: 0.60))
                         .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
@@ -132,6 +192,7 @@ struct ContentView: View {
                 Button(action: audioPlayer.togglePlayPause) {
                     Image(systemName: audioPlayer.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 50))
+                        .foregroundColor(Color(white: 0.70))
                         .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
@@ -139,6 +200,7 @@ struct ContentView: View {
                 Button(action: audioPlayer.nextTrack) {
                     Image(systemName: "forward.fill")
                         .font(.title2)
+                        .foregroundColor(Color(white: 0.60))
                         .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
@@ -149,13 +211,27 @@ struct ContentView: View {
                 Button("Clear List") {
                     audioPlayer.clearPlaylist()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
+                .font(.caption)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(white: 0.25))
+                .foregroundColor(Color(white: 0.70))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
                 .disabled(audioPlayer.playlist.isEmpty)
+                .opacity(audioPlayer.playlist.isEmpty ? 0.4 : 1.0)
 
                 Button("Load Audio File") {
                     audioPlayer.selectAudioFile()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(white: 0.40))
+                .foregroundColor(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
             // Playlist
@@ -208,14 +284,201 @@ struct ContentView: View {
             }
         }
         .padding(30)
-        .frame(width: 500)
+        .frame(width: 400)
         .fixedSize(horizontal: false, vertical: true)
+        .background(Color(white: 0.10))
+        .foregroundColor(Color(white: 0.85))
+        .tint(Color(white: 0.50))
+    }
+
+    private var volumeIcon: String {
+        if audioPlayer.volume == 0 {
+            return "speaker.slash.fill"
+        } else if audioPlayer.volume < 0.33 {
+            return "speaker.wave.1.fill"
+        } else if audioPlayer.volume < 0.66 {
+            return "speaker.wave.2.fill"
+        } else {
+            return "speaker.wave.3.fill"
+        }
     }
 
     private func timeString(from seconds: Double) -> String {
         let minutes = Int(seconds) / 60
         let seconds = Int(seconds) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+struct VolumePopoverView: View {
+    @Binding var volume: Double
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // Max volume button
+            Button(action: { volume = 1.0 }) {
+                Image(systemName: "speaker.wave.3.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(white: 0.55))
+            }
+            .buttonStyle(.plain)
+
+            // Vertical slider
+            Slider(value: $volume, in: 0...1)
+                .tint(Color(white: 0.50))
+                .rotationEffect(.degrees(-90))
+                .frame(width: 120, height: 20)
+                .frame(width: 20, height: 120)
+
+            // Mute button
+            Button(action: { volume = 0.0 }) {
+                Image(systemName: "speaker.slash.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(white: 0.55))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+    }
+}
+
+struct AirPlayPickerView: NSViewRepresentable {
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let picker = AVRoutePickerView()
+        picker.isRoutePickerButtonBordered = false
+
+        // Style the button to match our steel theme
+        if let button = picker.subviews.first(where: { $0 is NSButton }) as? NSButton {
+            button.contentTintColor = NSColor(white: 0.85, alpha: 1.0)
+        }
+
+        return picker
+    }
+
+    func updateNSView(_ nsView: AVRoutePickerView, context: Context) {}
+}
+
+struct EQPopoverView: View {
+    @Binding var eqEnabled: Bool
+    @Binding var bassGain: Double
+    @Binding var trebleGain: Double
+
+    private let gainSteps: [Double] = [-6, -3, 0, 3, 6]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // On/Off toggle
+            Toggle("Tone Control", isOn: $eqEnabled)
+                .font(.caption)
+                .fontWeight(.semibold)
+
+            // Bass control
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Bass (100 Hz)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 4) {
+                    ForEach(gainSteps, id: \.self) { gain in
+                        Button(action: { bassGain = gain }) {
+                            Text(gainLabel(gain))
+                                .font(.caption2)
+                                .fontWeight(bassGain == gain ? .bold : .regular)
+                                .frame(width: 36, height: 24)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(bassGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1))
+                                )
+                                .foregroundColor(bassGain == gain ? .white : .primary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!eqEnabled)
+                    }
+                }
+            }
+
+            // Treble control
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Treble (10 kHz)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 4) {
+                    ForEach(gainSteps, id: \.self) { gain in
+                        Button(action: { trebleGain = gain }) {
+                            Text(gainLabel(gain))
+                                .font(.caption2)
+                                .fontWeight(trebleGain == gain ? .bold : .regular)
+                                .frame(width: 36, height: 24)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(trebleGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1))
+                                )
+                                .foregroundColor(trebleGain == gain ? .white : .primary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!eqEnabled)
+                    }
+                }
+            }
+        }
+        .padding(12)
+    }
+
+    private func gainLabel(_ gain: Double) -> String {
+        if gain > 0 {
+            return "+\(Int(gain))"
+        } else {
+            return "\(Int(gain))"
+        }
+    }
+}
+
+struct SettingsPopoverView: View {
+    @Binding var gapDuration: Double
+
+    private let gapSteps: [Double] = [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Settings")
+                .font(.caption)
+                .fontWeight(.semibold)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Gap Between Tracks")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 4) {
+                    ForEach(gapSteps, id: \.self) { gap in
+                        Button(action: { gapDuration = gap }) {
+                            Text(gapLabel(gap))
+                                .font(.caption2)
+                                .fontWeight(gapDuration == gap ? .bold : .regular)
+                                .frame(width: 32, height: 24)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(gapDuration == gap ? Color(white: 0.40) : Color.primary.opacity(0.1))
+                                )
+                                .foregroundColor(gapDuration == gap ? .white : .primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(12)
+    }
+
+    private func gapLabel(_ gap: Double) -> String {
+        if gap == 0 {
+            return "0s"
+        } else if gap == gap.rounded() {
+            return "\(Int(gap))s"
+        } else {
+            return String(format: "%.1fs", gap)
+        }
     }
 }
 
@@ -252,7 +515,7 @@ struct PlaylistItemView: View {
                         Text(metadata.title)
                             .font(.caption)
                             .lineLimit(1)
-                            .foregroundColor(isCurrentTrack ? .accentColor : .primary)
+                            .foregroundColor(isCurrentTrack ? Color(white: 0.45) : .primary)
                     }
                 }
 
@@ -266,7 +529,7 @@ struct PlaylistItemView: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(isCurrentTrack ? Color.accentColor.opacity(0.1) : Color.clear)
+                    .fill(isCurrentTrack ? Color(white: 0.45).opacity(0.15) : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -281,4 +544,5 @@ struct PlaylistItemView: View {
 
 #Preview {
     ContentView()
+        .environmentObject(AudioPlayerManager())
 }
