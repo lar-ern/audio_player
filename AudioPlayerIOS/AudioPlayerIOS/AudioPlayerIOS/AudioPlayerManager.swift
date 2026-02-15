@@ -1,6 +1,6 @@
 import SwiftUI
 import AVFoundation
-import AppKit
+import UIKit
 import Combine
 
 struct TrackMetadata {
@@ -24,7 +24,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var copyright = ""
     @Published var sampleRate = ""
     @Published var bitDepth = ""
-    @Published var albumArtwork: NSImage?
+    @Published var albumArtwork: UIImage?
     @Published var isTrackLoaded = false
 
     @Published var playlist: [URL] = []
@@ -76,6 +76,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
         super.init()
 
+        configureAudioSession()
+
         // Set up playback completion handler (only fires on natural end, not manual stop)
         audioEngine.onPlaybackFinished = { [weak self] in
             guard let self = self else { return }
@@ -99,6 +101,16 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
         // Apply initial EQ settings
         updateEQ()
+    }
+
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+        } catch {
+            print("Failed to configure audio session: \(error.localizedDescription)")
+        }
     }
 
     private func updateEQ() {
@@ -154,7 +166,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     self.sampleRate = sampleRateText
                     self.bitDepth = bitDepthText
                     if let artworkData = artworkData {
-                        self.albumArtwork = NSImage(data: artworkData)
+                        self.albumArtwork = UIImage(data: artworkData)
                     } else {
                         self.albumArtwork = nil
                     }
@@ -169,43 +181,32 @@ class AudioPlayerManager: NSObject, ObservableObject {
         "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "alac", "caf", "ogg", "wma"
     ]
 
-    func selectAudioFile() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
+    func addFiles(_ urls: [URL]) {
+        var audioURLs: [URL] = []
 
-        // Include FLAC files along with other audio formats
-        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio, .folder]
-        panel.allowsOtherFileTypes = true
+        for url in urls {
+            // Start accessing security-scoped resource for iOS file access
+            guard url.startAccessingSecurityScopedResource() else { continue }
 
-        panel.begin { [weak self] response in
-            if response == .OK {
-                guard let self = self else { return }
-                var audioURLs: [URL] = []
-
-                for url in panel.urls {
-                    var isDir: ObjCBool = false
-                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                        audioURLs.append(contentsOf: self.audioFilesInDirectory(url))
-                    } else if Self.audioExtensions.contains(url.pathExtension.lowercased()) {
-                        audioURLs.append(url)
-                    }
-                }
-
-                // Sort by path for natural album/track ordering
-                audioURLs.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-
-                guard !audioURLs.isEmpty else { return }
-
-                let wasEmpty = self.playlist.isEmpty
-                self.playlist.append(contentsOf: audioURLs)
-
-                if wasEmpty {
-                    self.currentTrackIndex = 0
-                    self.loadTrack(at: 0)
-                }
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                audioURLs.append(contentsOf: audioFilesInDirectory(url))
+            } else if Self.audioExtensions.contains(url.pathExtension.lowercased()) {
+                audioURLs.append(url)
             }
+        }
+
+        // Sort by path for natural album/track ordering
+        audioURLs.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+
+        guard !audioURLs.isEmpty else { return }
+
+        let wasEmpty = playlist.isEmpty
+        playlist.append(contentsOf: audioURLs)
+
+        if wasEmpty {
+            currentTrackIndex = 0
+            loadTrack(at: 0)
         }
     }
 
@@ -362,6 +363,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     func clearPlaylist() {
+        // Stop accessing security-scoped resources
+        for url in playlist {
+            url.stopAccessingSecurityScopedResource()
+        }
+
         stopCurrentTrack()
         playlist.removeAll()
         metadataCache.removeAll()
@@ -442,5 +448,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
     deinit {
         stopTimer()
         trackGapTimer?.invalidate()
+        // Clean up security-scoped resources
+        for url in playlist {
+            url.stopAccessingSecurityScopedResource()
+        }
     }
 }
