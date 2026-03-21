@@ -64,6 +64,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var playbackStartPosition: Double = 0
     private var metadataCache: [URL: TrackMetadata] = [:]
 
+    // Cover art cycling state
+    private var folderImages: [UIImage] = []
+    private var currentArtworkIndex: Int = 0
+
     override init() {
         // Load EQ settings from UserDefaults before super.init
         self.eqEnabled = UserDefaults.standard.bool(forKey: "eqEnabled")
@@ -158,6 +162,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     }
                 }
 
+                // Scan folder for images on background thread
+                let folderImgs = self.imageFilesInFolder(of: url)
+
                 await MainActor.run {
                     self.currentTrackName = (title != nil && !title!.isEmpty) ? title! : fallbackName
                     self.currentArtist = (artist != nil && !artist!.isEmpty) ? artist! : "Unknown Artist"
@@ -165,11 +172,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     self.copyright = copyrightText ?? ""
                     self.sampleRate = sampleRateText
                     self.bitDepth = bitDepthText
-                    if let artworkData = artworkData {
-                        self.albumArtwork = UIImage(data: artworkData)
-                    } else {
-                        self.albumArtwork = nil
+
+                    // Build cover art cycling array: embedded artwork first, then folder images
+                    var images: [UIImage] = []
+                    if let artworkData = artworkData, let embeddedImage = UIImage(data: artworkData) {
+                        images.append(embeddedImage)
                     }
+                    images.append(contentsOf: folderImgs)
+
+                    self.folderImages = images
+                    self.currentArtworkIndex = 0
+                    self.albumArtwork = images.first
                 }
             } catch {
                 print("Error loading metadata: \(error.localizedDescription)")
@@ -180,6 +193,36 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private static let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "alac", "caf", "ogg", "wma"
     ]
+
+    private static let imageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"
+    ]
+
+    /// Scan the same folder as the given audio file for image files (non-recursive).
+    /// Note: On iOS, this may return empty due to sandbox restrictions on the parent directory.
+    private func imageFilesInFolder(of audioURL: URL) -> [UIImage] {
+        let folder = audioURL.deletingLastPathComponent()
+        let fm = FileManager.default
+
+        guard let contents = try? fm.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let imageURLs = contents
+            .filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+
+        return imageURLs.compactMap { UIImage(contentsOfFile: $0.path) }
+    }
+
+    /// Cycle to the next cover image when the user taps the album art.
+    func cycleArtwork() {
+        guard folderImages.count > 1 else { return }
+        currentArtworkIndex = (currentArtworkIndex + 1) % folderImages.count
+        albumArtwork = folderImages[currentArtworkIndex]
+    }
 
     func addFiles(_ urls: [URL]) {
         var audioURLs: [URL] = []
@@ -283,6 +326,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
             currentTrackName = "Error Loading Track"
             isTrackLoaded = false
             albumArtwork = nil
+            folderImages.removeAll()
+            currentArtworkIndex = 0
         }
     }
 
@@ -300,6 +345,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
         stopTimer()
         isPlaying = false
         albumArtwork = nil
+        folderImages.removeAll()
+        currentArtworkIndex = 0
         copyright = ""
         sampleRate = ""
         bitDepth = ""
