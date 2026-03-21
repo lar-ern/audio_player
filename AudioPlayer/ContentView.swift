@@ -7,280 +7,42 @@ struct ContentView: View {
     @State private var showVolumePopup = false
     @State private var showEQPopup = false
     @State private var showSettingsPopup = false
+    @State private var searchText = ""
+    @State private var isHorizontalLayout = false
+
+    private var filteredPlaylist: [(index: Int, url: URL)] {
+        if searchText.isEmpty {
+            return audioPlayer.playlist.enumerated().map { (index: $0.offset, url: $0.element) }
+        }
+        let query = searchText.lowercased()
+        return audioPlayer.playlist.enumerated().compactMap { offset, url in
+            let meta = audioPlayer.getTrackMetadata(for: url)
+            let matches = meta.title.lowercased().contains(query) ||
+                          meta.artist.lowercased().contains(query) ||
+                          meta.album.lowercased().contains(query)
+            return matches ? (index: offset, url: url) : nil
+        }
+    }
 
     var body: some View {
+        if isHorizontalLayout {
+            horizontalLayout
+        } else {
+            verticalLayout
+        }
+    }
+
+    // MARK: - Layouts
+
+    private var verticalLayout: some View {
         VStack(spacing: 20) {
-            // Album Art with overlay icons
-            ZStack {
-                // Album Art
-                ZStack {
-                    if let artwork = audioPlayer.albumArtwork {
-                        Image(nsImage: artwork)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 250, height: 250)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    } else {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(LinearGradient(
-                                gradient: Gradient(colors: [
-                                    Color(white: 0.45),
-                                    Color(white: 0.30),
-                                    Color(white: 0.20)
-                                ]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ))
-                            .frame(width: 250, height: 250)
-
-                        Image(systemName: "music.note")
-                            .font(.system(size: 80))
-                            .foregroundColor(.white.opacity(0.8))
-                    }
-                }
-                .shadow(radius: 10)
-                .overlay(alignment: .topLeading) {
-                    // Settings icon
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showSettingsPopup.toggle()
-                        }
-                    }) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 14))
-                            .foregroundColor(.white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .popover(isPresented: $showSettingsPopup, arrowEdge: .leading) {
-                        SettingsPopoverView(gapDuration: $audioPlayer.gapDuration)
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    // AirPlay picker
-                    AirPlayPickerView()
-                        .frame(width: 32, height: 32)
-                        .background(Color.black.opacity(0.5))
-                        .clipShape(Circle())
-                        .padding(8)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    // EQ icon
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showEQPopup.toggle()
-                        }
-                    }) {
-                        Image(systemName: "slider.vertical.3")
-                            .font(.system(size: 14))
-                            .foregroundColor(audioPlayer.eqEnabled ? Color(white: 0.75) : .white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .popover(isPresented: $showEQPopup, arrowEdge: .leading) {
-                        EQPopoverView(
-                            eqEnabled: $audioPlayer.eqEnabled,
-                            bassGain: $audioPlayer.bassGain,
-                            trebleGain: $audioPlayer.trebleGain
-                        )
-                    }
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    // Volume speaker icon
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showVolumePopup.toggle()
-                        }
-                    }) {
-                        Image(systemName: volumeIcon)
-                            .font(.system(size: 14))
-                            .foregroundColor(.white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .popover(isPresented: $showVolumePopup, arrowEdge: .trailing) {
-                        VolumePopoverView(volume: $audioPlayer.volume)
-                    }
-                }
-            }
-
-            // Track Info
-            VStack(spacing: 5) {
-                Text(audioPlayer.currentTrackName)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-
-                Text(audioPlayer.currentArtist)
-                    .font(.subheadline)
-                    .foregroundColor(Color(white: 0.55))
-                    .lineLimit(1)
-
-                Text(audioPlayer.currentAlbum)
-                    .font(.caption)
-                    .foregroundColor(Color(white: 0.50))
-                    .lineLimit(1)
-
-                // Technical info
-                if !audioPlayer.sampleRate.isEmpty || !audioPlayer.bitDepth.isEmpty {
-                    HStack(spacing: 8) {
-                        if !audioPlayer.sampleRate.isEmpty {
-                            Text(audioPlayer.sampleRate)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        if !audioPlayer.bitDepth.isEmpty {
-                            Text(audioPlayer.bitDepth)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // Copyright info
-                if !audioPlayer.copyright.isEmpty {
-                    Text(audioPlayer.copyright)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            // Progress Bar
-            VStack(spacing: 8) {
-                Slider(value: $audioPlayer.currentTime, in: 0...audioPlayer.duration) { editing in
-                    if !editing {
-                        audioPlayer.seek(to: audioPlayer.currentTime)
-                    }
-                }
-                .tint(Color(white: 0.50))
-                .disabled(!audioPlayer.isTrackLoaded)
-
-                HStack {
-                    Text(timeString(from: audioPlayer.currentTime))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Spacer()
-
-                    Text(timeString(from: audioPlayer.duration))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(.horizontal)
-
-            // Controls
-            HStack(spacing: 40) {
-                Button(action: audioPlayer.previousTrack) {
-                    Image(systemName: "backward.fill")
-                        .font(.title2)
-                        .foregroundColor(Color(white: 0.60))
-                        .frame(width: 50, height: 50)
-                }
-                .buttonStyle(.plain)
-
-                Button(action: audioPlayer.togglePlayPause) {
-                    Image(systemName: audioPlayer.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 50))
-                        .foregroundColor(Color(white: 0.70))
-                        .frame(width: 50, height: 50)
-                }
-                .buttonStyle(.plain)
-
-                Button(action: audioPlayer.nextTrack) {
-                    Image(systemName: "forward.fill")
-                        .font(.title2)
-                        .foregroundColor(Color(white: 0.60))
-                        .frame(width: 50, height: 50)
-                }
-                .buttonStyle(.plain)
-            }
-
-            // Clear and Load Buttons
-            HStack(spacing: 10) {
-                Button("Clear List") {
-                    audioPlayer.clearPlaylist()
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color(white: 0.25))
-                .foregroundColor(Color(white: 0.70))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .disabled(audioPlayer.playlist.isEmpty)
-                .opacity(audioPlayer.playlist.isEmpty ? 0.4 : 1.0)
-
-                Button("Load Audio File") {
-                    audioPlayer.selectAudioFile()
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color(white: 0.40))
-                .foregroundColor(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-
-            // Playlist
+            albumArtView
+            trackInfoView
+            progressView
+            controlsView
+            actionButtonsView
             if !audioPlayer.playlist.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text("Playlist")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 5)
-
-                        Spacer()
-
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                isPlaylistExpanded.toggle()
-                            }
-                        }) {
-                            Image(systemName: isPlaylistExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.trailing, 5)
-                    }
-
-                    ScrollView {
-                        VStack(spacing: 2) {
-                            ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
-                                PlaylistItemView(
-                                    url: url,
-                                    index: index,
-                                    isCurrentTrack: index == audioPlayer.currentTrackIndex,
-                                    previousMetadata: index > 0 ? audioPlayer.getTrackMetadata(for: audioPlayer.playlist[index - 1]) : nil,
-                                    onSelect: {
-                                        audioPlayer.selectTrack(at: index)
-                                    },
-                                    audioPlayer: audioPlayer
-                                )
-                            }
-                        }
-                    }
-                    .frame(maxHeight: isPlaylistExpanded ? 200 : 0)
-                    .opacity(isPlaylistExpanded ? 1 : 0)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.primary.opacity(0.05))
-                    )
-                }
+                verticalPlaylistView
             }
         }
         .padding(30)
@@ -289,6 +51,373 @@ struct ContentView: View {
         .background(Color(white: 0.10))
         .foregroundColor(Color(white: 0.85))
         .tint(Color(white: 0.50))
+    }
+
+    private var horizontalLayout: some View {
+        HStack(alignment: .top, spacing: 0) {
+            // Left panel: player controls
+            VStack(spacing: 20) {
+                albumArtView
+                trackInfoView
+                progressView
+                controlsView
+                actionButtonsView
+                Spacer()
+            }
+            .padding(24)
+            .frame(width: 350, alignment: .top)
+
+            Divider()
+
+            // Right panel: search + full playlist
+            VStack(alignment: .leading, spacing: 8) {
+                searchBarView
+                if audioPlayer.playlist.isEmpty {
+                    Spacer()
+                    Text("No tracks loaded")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                    Spacer()
+                } else {
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(Array(filteredPlaylist.enumerated()), id: \.element.index) { filteredIdx, item in
+                                PlaylistItemView(
+                                    url: item.url,
+                                    index: item.index,
+                                    isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
+                                    previousMetadata: filteredIdx > 0 ? audioPlayer.getTrackMetadata(for: filteredPlaylist[filteredIdx - 1].url) : nil,
+                                    onSelect: { audioPlayer.selectTrack(at: item.index) },
+                                    audioPlayer: audioPlayer
+                                )
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.primary.opacity(0.05))
+                    )
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: 750, height: 540)
+        .background(Color(white: 0.10))
+        .foregroundColor(Color(white: 0.85))
+        .tint(Color(white: 0.50))
+    }
+
+    // MARK: - Shared sub-views
+
+    private var albumArtView: some View {
+        ZStack {
+            ZStack {
+                if let artwork = audioPlayer.albumArtwork {
+                    Image(nsImage: artwork)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 250, height: 250)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color(white: 0.45),
+                                Color(white: 0.30),
+                                Color(white: 0.20)
+                            ]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                        .frame(width: 250, height: 250)
+
+                    Image(systemName: "music.note")
+                        .font(.system(size: 80))
+                        .foregroundColor(.white.opacity(0.8))
+                }
+            }
+            .shadow(radius: 10)
+            .onTapGesture {
+                audioPlayer.cycleArtwork()
+            }
+            .overlay(alignment: .topLeading) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSettingsPopup.toggle()
+                    }
+                }) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .popover(isPresented: $showSettingsPopup, arrowEdge: .leading) {
+                    SettingsPopoverView(gapDuration: $audioPlayer.gapDuration)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                AirPlayPickerView()
+                    .frame(width: 32, height: 32)
+                    .background(Color.black.opacity(0.5))
+                    .clipShape(Circle())
+                    .padding(8)
+            }
+            .overlay(alignment: .bottomLeading) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showEQPopup.toggle()
+                    }
+                }) {
+                    Image(systemName: "slider.vertical.3")
+                        .font(.system(size: 14))
+                        .foregroundColor(audioPlayer.eqEnabled ? Color(white: 0.75) : .white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .popover(isPresented: $showEQPopup, arrowEdge: .leading) {
+                    EQPopoverView(
+                        eqEnabled: $audioPlayer.eqEnabled,
+                        bassGain: $audioPlayer.bassGain,
+                        trebleGain: $audioPlayer.trebleGain
+                    )
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showVolumePopup.toggle()
+                    }
+                }) {
+                    Image(systemName: volumeIcon)
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .popover(isPresented: $showVolumePopup, arrowEdge: .trailing) {
+                    VolumePopoverView(volume: $audioPlayer.volume)
+                }
+            }
+        }
+    }
+
+    private var trackInfoView: some View {
+        VStack(spacing: 5) {
+            Text(audioPlayer.currentTrackName)
+                .font(.title2)
+                .fontWeight(.semibold)
+                .lineLimit(1)
+
+            Text(audioPlayer.currentArtist)
+                .font(.subheadline)
+                .foregroundColor(Color(white: 0.55))
+                .lineLimit(1)
+
+            Text(audioPlayer.currentAlbum)
+                .font(.caption)
+                .foregroundColor(Color(white: 0.50))
+                .lineLimit(1)
+
+            if !audioPlayer.sampleRate.isEmpty || !audioPlayer.bitDepth.isEmpty {
+                HStack(spacing: 8) {
+                    if !audioPlayer.sampleRate.isEmpty {
+                        Text(audioPlayer.sampleRate)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    if !audioPlayer.bitDepth.isEmpty {
+                        Text(audioPlayer.bitDepth)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            if !audioPlayer.copyright.isEmpty {
+                Text(audioPlayer.copyright)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var progressView: some View {
+        VStack(spacing: 8) {
+            Slider(value: $audioPlayer.currentTime, in: 0...audioPlayer.duration) { editing in
+                if !editing {
+                    audioPlayer.seek(to: audioPlayer.currentTime)
+                }
+            }
+            .tint(Color(white: 0.50))
+            .disabled(!audioPlayer.isTrackLoaded)
+
+            HStack {
+                Text(timeString(from: audioPlayer.currentTime))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Spacer()
+
+                Text(timeString(from: audioPlayer.duration))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var controlsView: some View {
+        HStack(spacing: 40) {
+            Button(action: audioPlayer.previousTrack) {
+                Image(systemName: "backward.fill")
+                    .font(.title2)
+                    .foregroundColor(Color(white: 0.60))
+                    .frame(width: 50, height: 50)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: audioPlayer.togglePlayPause) {
+                Image(systemName: audioPlayer.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 50))
+                    .foregroundColor(Color(white: 0.70))
+                    .frame(width: 50, height: 50)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: audioPlayer.nextTrack) {
+                Image(systemName: "forward.fill")
+                    .font(.title2)
+                    .foregroundColor(Color(white: 0.60))
+                    .frame(width: 50, height: 50)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var actionButtonsView: some View {
+        HStack(spacing: 10) {
+            Button("Clear List") {
+                audioPlayer.clearPlaylist()
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(white: 0.25))
+            .foregroundColor(Color(white: 0.70))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .disabled(audioPlayer.playlist.isEmpty)
+            .opacity(audioPlayer.playlist.isEmpty ? 0.4 : 1.0)
+
+            Button("Load Audio File") {
+                audioPlayer.selectAudioFile()
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .fontWeight(.semibold)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(white: 0.40))
+            .foregroundColor(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            Spacer()
+
+            Button(action: { isHorizontalLayout.toggle() }) {
+                Image(systemName: isHorizontalLayout ? "rectangle.portrait" : "rectangle.split.2x1")
+                    .font(.caption)
+                    .foregroundColor(Color(white: 0.60))
+            }
+            .buttonStyle(.plain)
+            .help(isHorizontalLayout ? "Switch to compact layout" : "Switch to wide layout")
+        }
+    }
+
+    private var searchBarView: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            TextField("Search artist, album, title…", text: $searchText)
+                .font(.caption)
+                .textFieldStyle(.plain)
+            if !searchText.isEmpty {
+                Button(action: { searchText = "" }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var verticalPlaylistView: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Playlist")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 5)
+
+                Spacer()
+
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        isPlaylistExpanded.toggle()
+                    }
+                }) {
+                    Image(systemName: isPlaylistExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 5)
+            }
+
+            if isPlaylistExpanded {
+                searchBarView
+            }
+
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(Array(filteredPlaylist.enumerated()), id: \.element.index) { filteredIdx, item in
+                        PlaylistItemView(
+                            url: item.url,
+                            index: item.index,
+                            isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
+                            previousMetadata: filteredIdx > 0 ? audioPlayer.getTrackMetadata(for: filteredPlaylist[filteredIdx - 1].url) : nil,
+                            onSelect: { audioPlayer.selectTrack(at: item.index) },
+                            audioPlayer: audioPlayer
+                        )
+                    }
+                }
+            }
+            .frame(maxHeight: isPlaylistExpanded ? 200 : 0)
+            .opacity(isPlaylistExpanded ? 1 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.05))
+            )
+        }
     }
 
     private var volumeIcon: String {

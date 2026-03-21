@@ -42,6 +42,9 @@ struct ContentView: View {
                         }
                     }
                     .shadow(radius: 10)
+                    .onTapGesture {
+                        audioPlayer.cycleArtwork()
+                    }
                     .overlay(alignment: .topLeading) {
                         // Settings icon
                         Button(action: {
