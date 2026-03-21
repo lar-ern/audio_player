@@ -15,7 +15,7 @@ PROJECT_NAME="AudioPlayer"
 BUILD_DIR="build"
 APP_NAME="AudioPlayer.app"
 
-SWIFT_FILES=AudioPlayer/AudioPlayer/*.swift
+SWIFT_FILES=AudioPlayer/*.swift
 
 # Create build directory
 mkdir -p "$BUILD_DIR"
