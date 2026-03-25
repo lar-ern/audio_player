@@ -63,6 +63,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var playbackStartTime: Date?
     private var playbackStartPosition: Double = 0
     private var metadataCache: [URL: TrackMetadata] = [:]
+    private var durationCache: [URL: TimeInterval] = [:]
+
+    // Incremented on every loadTrack call so background loads from a
+    // previous request are discarded when the user switches tracks quickly.
+    private var loadGeneration = 0
+    private let loadQueue = DispatchQueue(label: "com.audioplayer.load", qos: .userInitiated)
 
     override init() {
         // Load EQ settings from UserDefaults before super.init
@@ -201,6 +207,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 let wasEmpty = self.playlist.isEmpty
                 self.playlist.append(contentsOf: audioURLs)
 
+                // Pre-warm duration cache in the background so the playlist
+                // shows track lengths without any main-thread stalls.
+                for url in audioURLs {
+                    guard self.durationCache[url] == nil else { continue }
+                    DispatchQueue.global(qos: .utility).async { [weak self] in
+                        guard let file = try? AVAudioFile(forReading: url) else { return }
+                        let d = Double(file.length) / file.processingFormat.sampleRate
+                        DispatchQueue.main.async { self?.durationCache[url] = d }
+                    }
+                }
+
                 if wasEmpty {
                     self.currentTrackIndex = 0
                     self.loadTrack(at: 0)
@@ -235,53 +252,97 @@ class AudioPlayerManager: NSObject, ObservableObject {
         let url = playlist[index]
         currentTrackIndex = index
 
-        // Cancel any pending gap timer
+        // Stamp this load so any in-flight background load for a previous
+        // track can detect it has been superseded and bail out.
+        loadGeneration += 1
+        let generation = loadGeneration
+
         trackGapTimer?.invalidate()
         trackGapTimer = nil
 
-        // Soft-stop current playback (keep engine running for smooth transition)
         audioEngine.stopPlayer()
         stopTimer()
         isPlaying = false
+        isTrackLoaded = false
 
-        // Set fallback display name immediately (keep previous artwork until new metadata loads)
+        // Update UI immediately with what we know; metadata arrives async.
         currentTrackName = url.deletingPathExtension().lastPathComponent
         currentArtist = "Unknown Artist"
         currentAlbum = "Unknown Album"
         copyright = ""
         sampleRate = ""
         bitDepth = ""
-        // Note: albumArtwork is NOT cleared here — extractMetadata will update it
-        // This prevents the UI from flashing to the placeholder between tracks
 
         extractMetadata(from: url)
 
-        do {
-            _ = try audioEngine.loadFile(url: url)
-            try audioEngine.prepareForPlayback()
-            audioEngine.setVolume(Float(volume))
-            updateEQ()
+        // Buffer the file on a background queue — this is the expensive step
+        // (decoding the entire audio file into PCM) and must not block the UI.
+        loadQueue.async { [weak self] in
+            guard let self = self, self.loadGeneration == generation else { return }
 
-            duration = audioEngine.duration
-            currentTime = 0
-            playbackStartPosition = 0
-            isTrackLoaded = true
+            do {
+                // Fast path: use the preloaded buffer if it matches this URL.
+                // Slow path: open and decode the file from scratch.
+                var file: AVAudioFile
+                var buffer: AVAudioPCMBuffer
 
-            if autoPlay {
-                try audioEngine.play()
-                isPlaying = true
-                playbackStartTime = Date()
+                var preFile: AVAudioFile?
+                var preBuf: AVAudioPCMBuffer?
+                var preURL: URL?
+                self.audioEngine.preloadQueue.sync {
+                    preFile = self.audioEngine.preloadedFile
+                    preBuf  = self.audioEngine.preloadedBuffer
+                    preURL  = self.audioEngine.preloadedURL
+                }
+
+                if preURL == url, let pf = preFile, let pb = preBuf {
+                    file   = pf
+                    buffer = pb
+                } else {
+                    file   = try AVAudioFile(forReading: url)
+                    buffer = try self.audioEngine.bufferFile(file)
+                }
+
+                guard self.loadGeneration == generation else { return }
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.loadGeneration == generation else { return }
+                    do {
+                        self.audioEngine.setContent(file: file, buffer: buffer)
+                        try self.audioEngine.prepareForPlayback()
+                        self.audioEngine.setVolume(Float(self.volume))
+                        self.updateEQ()
+
+                        let d = self.audioEngine.duration
+                        self.duration = d
+                        self.durationCache[url] = d
+                        self.currentTime = 0
+                        self.playbackStartPosition = 0
+                        self.isTrackLoaded = true
+
+                        if autoPlay {
+                            try self.audioEngine.play()
+                            self.isPlaying = true
+                            self.playbackStartTime = Date()
+                        }
+
+                        self.startTimer()
+                        self.preloadNextTrack(after: index)
+                    } catch {
+                        print("Error preparing playback: \(error.localizedDescription)")
+                        self.currentTrackName = "Error Loading Track"
+                        self.isTrackLoaded = false
+                        self.albumArtwork = nil
+                    }
+                }
+            } catch {
+                guard self.loadGeneration == generation else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.currentTrackName = "Error Loading Track"
+                    self?.isTrackLoaded = false
+                    self?.albumArtwork = nil
+                }
             }
-
-            startTimer()
-
-            // Preload the next track into memory
-            preloadNextTrack(after: index)
-        } catch {
-            print("Error loading audio file: \(error.localizedDescription)")
-            currentTrackName = "Error Loading Track"
-            isTrackLoaded = false
-            albumArtwork = nil
         }
     }
 
@@ -365,6 +426,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         stopCurrentTrack()
         playlist.removeAll()
         metadataCache.removeAll()
+        durationCache.removeAll()
         currentTrackIndex = 0
         currentTrackName = "No Track Loaded"
         currentArtist = "Unknown Artist"
@@ -375,9 +437,18 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     func getTrackDuration(for url: URL) -> TimeInterval {
-        // Use AVAudioFile for synchronous duration — no deprecated APIs
-        guard let file = try? AVAudioFile(forReading: url) else { return 0 }
-        return Double(file.length) / file.processingFormat.sampleRate
+        if let cached = durationCache[url] { return cached }
+        // Not yet cached — read on a background thread and refresh the UI when done.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let file = try? AVAudioFile(forReading: url) else { return }
+            let d = Double(file.length) / file.processingFormat.sampleRate
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.durationCache[url] = d
+                self.objectWillChange.send()
+            }
+        }
+        return 0
     }
 
     func getTrackMetadata(for url: URL) -> TrackMetadata {
