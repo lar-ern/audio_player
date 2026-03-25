@@ -99,8 +99,8 @@ struct ContentView: View {
             // Album art with overlay icons
             ZStack {
                 ZStack {
-                    if let artwork = audioPlayer.albumArtwork {
-                        Image(nsImage: artwork)
+                    if !audioPlayer.artworkImages.isEmpty {
+                        Image(nsImage: audioPlayer.artworkImages[audioPlayer.currentArtworkIndex])
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 250, height: 250)
@@ -124,6 +124,21 @@ struct ContentView: View {
                     }
                 }
                 .shadow(radius: 10)
+                // Clicking cycles through available artwork images.
+                .onTapGesture { audioPlayer.cycleArtwork() }
+                .overlay(alignment: .bottom) {
+                    // Show counter when there is more than one image.
+                    if audioPlayer.artworkImages.count > 1 {
+                        Text("\(audioPlayer.currentArtworkIndex + 1) / \(audioPlayer.artworkImages.count)")
+                            .font(.caption2)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.55))
+                            .clipShape(Capsule())
+                            .padding(.bottom, 8)
+                    }
+                }
                 .overlay(alignment: .topLeading) {
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.2)) { showSettingsPopup.toggle() }
@@ -389,6 +404,7 @@ struct ContentView: View {
                                 isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
                                 previousMetadata: prevMeta,
                                 onSelect: { audioPlayer.selectTrack(at: item.index) },
+                                onDoubleClick: { audioPlayer.startTrack(at: item.index) },
                                 audioPlayer: audioPlayer
                             )
                         }
@@ -567,6 +583,7 @@ struct PlaylistItemView: View {
     let isCurrentTrack: Bool
     let previousMetadata: TrackMetadata?
     let onSelect: () -> Void
+    let onDoubleClick: () -> Void
     let audioPlayer: AudioPlayerManager
 
     var body: some View {
@@ -576,37 +593,40 @@ struct PlaylistItemView: View {
                            previousMetadata?.artist != metadata.artist ||
                            previousMetadata?.album != metadata.album
 
-        Button(action: onSelect) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    if showFullInfo {
-                        Text("\(metadata.artist) • \(metadata.album)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    HStack(spacing: 0) {
-                        Text("  ")
-                            .font(.caption)
-                        Text(metadata.title)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .foregroundColor(isCurrentTrack ? Color(white: 0.45) : .primary)
-                    }
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                if showFullInfo {
+                    Text("\(metadata.artist) • \(metadata.album)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
-                Spacer()
-                Text(timeString(from: duration))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                HStack(spacing: 0) {
+                    Text("  ")
+                        .font(.caption)
+                    Text(metadata.title)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .foregroundColor(isCurrentTrack ? Color(white: 0.45) : .primary)
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(isCurrentTrack ? Color(white: 0.45).opacity(0.15) : Color.clear)
-            )
+            Spacer()
+            Text(timeString(from: duration))
+                .font(.caption2)
+                .foregroundColor(.secondary)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(isCurrentTrack ? Color(white: 0.45).opacity(0.15) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        // Double-click starts playback; single click selects (respects play state).
+        .gesture(
+            TapGesture(count: 2).onEnded { onDoubleClick() }
+                .exclusively(before: TapGesture(count: 1).onEnded { onSelect() })
+        )
     }
 
     private func timeString(from seconds: Double) -> String {
