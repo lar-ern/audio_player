@@ -401,7 +401,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     self?.currentTrackName = "Error Loading Track"
                     self?.isTrackLoaded = false
-                    self?.albumArtwork = nil
+                    self?.artworkImages = []
                 }
             }
         }
