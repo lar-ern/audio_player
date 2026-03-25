@@ -52,7 +52,7 @@ struct ContentView: View {
             }
         }
         .padding(30)
-        .frame(width: 400)
+        .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -65,7 +65,7 @@ struct ContentView: View {
                 playerControlsView
             }
             .padding(30)
-            .frame(width: 360)
+            .frame(width: 380)
 
             Rectangle()
                 .fill(Color(white: 0.20))
@@ -86,9 +86,9 @@ struct ContentView: View {
                         .padding(16)
                 }
             }
-            .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minHeight: 480)
+        .frame(minHeight: 560)
         .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -330,9 +330,7 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                Spacer()
-
-                // Search field
+                // Search field — fills the space between label and toggle button
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass")
                         .font(.caption2)
@@ -340,7 +338,6 @@ struct ContentView: View {
                     TextField("Search", text: $searchText)
                         .textFieldStyle(.plain)
                         .font(.caption)
-                        .frame(width: 100)
                     if !searchText.isEmpty {
                         Button(action: { searchText = "" }) {
                             Image(systemName: "xmark.circle.fill")
@@ -354,6 +351,7 @@ struct ContentView: View {
                 .padding(.vertical, 3)
                 .background(Color(white: 0.18))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+                .frame(maxWidth: .infinity)
 
                 // Layout toggle
                 Button(action: {
@@ -411,7 +409,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .frame(maxHeight: showList ? (sidePanel ? .infinity : 200) : 0)
+            .frame(maxHeight: showList ? (sidePanel ? .infinity : 320) : 0)
             .opacity(showList ? 1 : 0)
             .background(
                 RoundedRectangle(cornerRadius: 8)
@@ -596,10 +594,19 @@ struct PlaylistItemView: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 if showFullInfo {
-                    Text("\(metadata.artist) • \(metadata.album)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 0) {
+                        Text(metadata.artist)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(" • ")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(metadata.album)
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                    }
+                    .lineLimit(1)
                 }
                 HStack(spacing: 0) {
                     Text("  ")
