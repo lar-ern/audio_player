@@ -7,12 +7,97 @@ struct ContentView: View {
     @State private var showVolumePopup = false
     @State private var showEQPopup = false
     @State private var showSettingsPopup = false
+    @State private var searchText = ""
+    @State private var isWideLayout = false
+
+    // Filtered playlist as (originalIndex, url) pairs so tapping a search
+    // result still plays the correct track in the full playlist.
+    private var filteredPlaylist: [(index: Int, url: URL)] {
+        if searchText.isEmpty {
+            return audioPlayer.playlist.enumerated().map { (index: $0.offset, url: $0.element) }
+        }
+        let query = searchText.lowercased()
+        return audioPlayer.playlist.enumerated().compactMap { offset, url in
+            let meta = audioPlayer.getTrackMetadata(for: url)
+            if meta.title.lowercased().contains(query) ||
+               meta.artist.lowercased().contains(query) ||
+               meta.album.lowercased().contains(query) {
+                return (index: offset, url: url)
+            }
+            return nil
+        }
+    }
 
     var body: some View {
+        Group {
+            if isWideLayout {
+                wideLayout
+            } else {
+                tallLayout
+            }
+        }
+        .background(Color(white: 0.10))
+        .foregroundColor(Color(white: 0.85))
+        .tint(Color(white: 0.50))
+    }
+
+    // MARK: - Tall layout (default)
+
+    private var tallLayout: some View {
         VStack(spacing: 20) {
-            // Album Art with overlay icons
+            playerControlsView
+
+            if !audioPlayer.playlist.isEmpty {
+                playlistView(sidePanel: false)
+            }
+        }
+        .padding(30)
+        .frame(width: 400)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: - Wide layout
+
+    private var wideLayout: some View {
+        HStack(alignment: .top, spacing: 0) {
+            // Left: player controls
+            VStack(spacing: 20) {
+                playerControlsView
+            }
+            .padding(30)
+            .frame(width: 360)
+
+            Rectangle()
+                .fill(Color(white: 0.20))
+                .frame(width: 1)
+
+            // Right: search + track list
+            Group {
+                if audioPlayer.playlist.isEmpty {
+                    VStack {
+                        Spacer()
+                        Text("No tracks loaded")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                } else {
+                    playlistView(sidePanel: true)
+                        .padding(16)
+                }
+            }
+            .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minHeight: 480)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: - Player controls (shared)
+
+    private var playerControlsView: some View {
+        VStack(spacing: 20) {
+            // Album art with overlay icons
             ZStack {
-                // Album Art
                 ZStack {
                     if let artwork = audioPlayer.albumArtwork {
                         Image(nsImage: artwork)
@@ -40,11 +125,8 @@ struct ContentView: View {
                 }
                 .shadow(radius: 10)
                 .overlay(alignment: .topLeading) {
-                    // Settings icon
                     Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showSettingsPopup.toggle()
-                        }
+                        withAnimation(.easeInOut(duration: 0.2)) { showSettingsPopup.toggle() }
                     }) {
                         Image(systemName: "gearshape.fill")
                             .font(.system(size: 14))
@@ -60,7 +142,6 @@ struct ContentView: View {
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    // AirPlay picker
                     AirPlayPickerView()
                         .frame(width: 32, height: 32)
                         .background(Color.black.opacity(0.5))
@@ -68,11 +149,8 @@ struct ContentView: View {
                         .padding(8)
                 }
                 .overlay(alignment: .bottomLeading) {
-                    // EQ icon
                     Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showEQPopup.toggle()
-                        }
+                        withAnimation(.easeInOut(duration: 0.2)) { showEQPopup.toggle() }
                     }) {
                         Image(systemName: "slider.vertical.3")
                             .font(.system(size: 14))
@@ -92,11 +170,8 @@ struct ContentView: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    // Volume speaker icon
                     Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showVolumePopup.toggle()
-                        }
+                        withAnimation(.easeInOut(duration: 0.2)) { showVolumePopup.toggle() }
                     }) {
                         Image(systemName: volumeIcon)
                             .font(.system(size: 14))
@@ -113,7 +188,7 @@ struct ContentView: View {
                 }
             }
 
-            // Track Info
+            // Track info
             VStack(spacing: 5) {
                 Text(audioPlayer.currentTrackName)
                     .font(.title2)
@@ -130,7 +205,6 @@ struct ContentView: View {
                     .foregroundColor(Color(white: 0.50))
                     .lineLimit(1)
 
-                // Technical info
                 if !audioPlayer.sampleRate.isEmpty || !audioPlayer.bitDepth.isEmpty {
                     HStack(spacing: 8) {
                         if !audioPlayer.sampleRate.isEmpty {
@@ -146,7 +220,6 @@ struct ContentView: View {
                     }
                 }
 
-                // Copyright info
                 if !audioPlayer.copyright.isEmpty {
                     Text(audioPlayer.copyright)
                         .font(.caption2)
@@ -155,12 +228,10 @@ struct ContentView: View {
                 }
             }
 
-            // Progress Bar
+            // Progress bar
             VStack(spacing: 8) {
                 Slider(value: $audioPlayer.currentTime, in: 0...audioPlayer.duration) { editing in
-                    if !editing {
-                        audioPlayer.seek(to: audioPlayer.currentTime)
-                    }
+                    if !editing { audioPlayer.seek(to: audioPlayer.currentTime) }
                 }
                 .tint(Color(white: 0.50))
                 .disabled(!audioPlayer.isTrackLoaded)
@@ -169,9 +240,7 @@ struct ContentView: View {
                     Text(timeString(from: audioPlayer.currentTime))
                         .font(.caption)
                         .foregroundColor(.secondary)
-
                     Spacer()
-
                     Text(timeString(from: audioPlayer.duration))
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -179,7 +248,7 @@ struct ContentView: View {
             }
             .padding(.horizontal)
 
-            // Controls
+            // Playback controls
             HStack(spacing: 40) {
                 Button(action: audioPlayer.previousTrack) {
                     Image(systemName: "backward.fill")
@@ -206,7 +275,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
 
-            // Clear and Load Buttons
+            // Clear and Load buttons
             HStack(spacing: 10) {
                 Button("Clear List") {
                     audioPlayer.clearPlaylist()
@@ -233,80 +302,117 @@ struct ContentView: View {
                 .foregroundColor(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
+        }
+    }
 
-            // Playlist
-            if !audioPlayer.playlist.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text("Playlist")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 5)
+    // MARK: - Playlist view (shared)
 
-                        Spacer()
+    private func playlistView(sidePanel: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Header row
+            HStack(spacing: 6) {
+                Text("Playlist")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
-                        Button(action: {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                isPlaylistExpanded.toggle()
-                            }
-                        }) {
-                            Image(systemName: isPlaylistExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption)
+                Spacer()
+
+                // Search field
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                        .frame(width: 100)
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .padding(.trailing, 5)
                     }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color(white: 0.18))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
 
-                    ScrollView {
-                        VStack(spacing: 2) {
-                            ForEach(Array(audioPlayer.playlist.enumerated()), id: \.offset) { index, url in
-                                PlaylistItemView(
-                                    url: url,
-                                    index: index,
-                                    isCurrentTrack: index == audioPlayer.currentTrackIndex,
-                                    previousMetadata: index > 0 ? audioPlayer.getTrackMetadata(for: audioPlayer.playlist[index - 1]) : nil,
-                                    onSelect: {
-                                        audioPlayer.selectTrack(at: index)
-                                    },
-                                    audioPlayer: audioPlayer
-                                )
-                            }
-                        }
+                // Layout toggle
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        isWideLayout.toggle()
                     }
-                    .frame(maxHeight: isPlaylistExpanded ? 200 : 0)
-                    .opacity(isPlaylistExpanded ? 1 : 0)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.primary.opacity(0.05))
-                    )
+                }) {
+                    Image(systemName: isWideLayout ? "rectangle.split.1x2" : "rectangle.split.2x1")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
+
+                // Expand/collapse (tall layout only)
+                if !sidePanel {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            isPlaylistExpanded.toggle()
+                        }
+                    }) {
+                        Image(systemName: isPlaylistExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
+            .padding(.horizontal, 5)
+
+            // Track list
+            let showList = sidePanel || isPlaylistExpanded
+            ScrollView {
+                VStack(spacing: 2) {
+                    if filteredPlaylist.isEmpty {
+                        Text("No results for \"\(searchText)\"")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        ForEach(filteredPlaylist, id: \.index) { item in
+                            let prevIndex = filteredPlaylist.first(where: { $0.index == item.index - 1 })?.index
+                            let prevMeta = prevIndex.map { audioPlayer.getTrackMetadata(for: audioPlayer.playlist[$0]) }
+                            PlaylistItemView(
+                                url: item.url,
+                                index: item.index,
+                                isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
+                                previousMetadata: prevMeta,
+                                onSelect: { audioPlayer.selectTrack(at: item.index) },
+                                audioPlayer: audioPlayer
+                            )
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: showList ? (sidePanel ? .infinity : 200) : 0)
+            .opacity(showList ? 1 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.05))
+            )
         }
-        .padding(30)
-        .frame(width: 400)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(Color(white: 0.10))
-        .foregroundColor(Color(white: 0.85))
-        .tint(Color(white: 0.50))
     }
 
     private var volumeIcon: String {
-        if audioPlayer.volume == 0 {
-            return "speaker.slash.fill"
-        } else if audioPlayer.volume < 0.33 {
-            return "speaker.wave.1.fill"
-        } else if audioPlayer.volume < 0.66 {
-            return "speaker.wave.2.fill"
-        } else {
-            return "speaker.wave.3.fill"
-        }
+        if audioPlayer.volume == 0 { return "speaker.slash.fill" }
+        if audioPlayer.volume < 0.33 { return "speaker.wave.1.fill" }
+        if audioPlayer.volume < 0.66 { return "speaker.wave.2.fill" }
+        return "speaker.wave.3.fill"
     }
 
     private func timeString(from seconds: Double) -> String {
-        let minutes = Int(seconds) / 60
-        let seconds = Int(seconds) % 60
-        return String(format: "%d:%02d", minutes, seconds)
+        String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
 }
 
@@ -315,7 +421,6 @@ struct VolumePopoverView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            // Max volume button
             Button(action: { volume = 1.0 }) {
                 Image(systemName: "speaker.wave.3.fill")
                     .font(.system(size: 12))
@@ -323,14 +428,12 @@ struct VolumePopoverView: View {
             }
             .buttonStyle(.plain)
 
-            // Vertical slider
             Slider(value: $volume, in: 0...1)
                 .tint(Color(white: 0.50))
                 .rotationEffect(.degrees(-90))
                 .frame(width: 120, height: 20)
                 .frame(width: 20, height: 120)
 
-            // Mute button
             Button(action: { volume = 0.0 }) {
                 Image(systemName: "speaker.slash.fill")
                     .font(.system(size: 12))
@@ -346,12 +449,9 @@ struct AirPlayPickerView: NSViewRepresentable {
     func makeNSView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.isRoutePickerButtonBordered = false
-
-        // Style the button to match our steel theme
         if let button = picker.subviews.first(where: { $0 is NSButton }) as? NSButton {
             button.contentTintColor = NSColor(white: 0.85, alpha: 1.0)
         }
-
         return picker
     }
 
@@ -367,17 +467,14 @@ struct EQPopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // On/Off toggle
             Toggle("Tone Control", isOn: $eqEnabled)
                 .font(.caption)
                 .fontWeight(.semibold)
 
-            // Bass control
             VStack(alignment: .leading, spacing: 4) {
                 Text("Bass (100 Hz)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-
                 HStack(spacing: 4) {
                     ForEach(gainSteps, id: \.self) { gain in
                         Button(action: { bassGain = gain }) {
@@ -385,10 +482,8 @@ struct EQPopoverView: View {
                                 .font(.caption2)
                                 .fontWeight(bassGain == gain ? .bold : .regular)
                                 .frame(width: 36, height: 24)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(bassGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1))
-                                )
+                                .background(RoundedRectangle(cornerRadius: 4)
+                                    .fill(bassGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1)))
                                 .foregroundColor(bassGain == gain ? .white : .primary)
                         }
                         .buttonStyle(.plain)
@@ -397,12 +492,10 @@ struct EQPopoverView: View {
                 }
             }
 
-            // Treble control
             VStack(alignment: .leading, spacing: 4) {
                 Text("Treble (10 kHz)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-
                 HStack(spacing: 4) {
                     ForEach(gainSteps, id: \.self) { gain in
                         Button(action: { trebleGain = gain }) {
@@ -410,10 +503,8 @@ struct EQPopoverView: View {
                                 .font(.caption2)
                                 .fontWeight(trebleGain == gain ? .bold : .regular)
                                 .frame(width: 36, height: 24)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(trebleGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1))
-                                )
+                                .background(RoundedRectangle(cornerRadius: 4)
+                                    .fill(trebleGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1)))
                                 .foregroundColor(trebleGain == gain ? .white : .primary)
                         }
                         .buttonStyle(.plain)
@@ -426,11 +517,7 @@ struct EQPopoverView: View {
     }
 
     private func gainLabel(_ gain: Double) -> String {
-        if gain > 0 {
-            return "+\(Int(gain))"
-        } else {
-            return "\(Int(gain))"
-        }
+        gain > 0 ? "+\(Int(gain))" : "\(Int(gain))"
     }
 }
 
@@ -449,7 +536,6 @@ struct SettingsPopoverView: View {
                 Text("Gap Between Tracks")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-
                 HStack(spacing: 4) {
                     ForEach(gapSteps, id: \.self) { gap in
                         Button(action: { gapDuration = gap }) {
@@ -457,10 +543,8 @@ struct SettingsPopoverView: View {
                                 .font(.caption2)
                                 .fontWeight(gapDuration == gap ? .bold : .regular)
                                 .frame(width: 32, height: 24)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .fill(gapDuration == gap ? Color(white: 0.40) : Color.primary.opacity(0.1))
-                                )
+                                .background(RoundedRectangle(cornerRadius: 4)
+                                    .fill(gapDuration == gap ? Color(white: 0.40) : Color.primary.opacity(0.1)))
                                 .foregroundColor(gapDuration == gap ? .white : .primary)
                         }
                         .buttonStyle(.plain)
@@ -472,13 +556,8 @@ struct SettingsPopoverView: View {
     }
 
     private func gapLabel(_ gap: Double) -> String {
-        if gap == 0 {
-            return "0s"
-        } else if gap == gap.rounded() {
-            return "\(Int(gap))s"
-        } else {
-            return String(format: "%.1fs", gap)
-        }
+        if gap == 0 { return "0s" }
+        return gap == gap.rounded() ? "\(Int(gap))s" : String(format: "%.1fs", gap)
     }
 }
 
@@ -493,22 +572,19 @@ struct PlaylistItemView: View {
     var body: some View {
         let metadata = audioPlayer.getTrackMetadata(for: url)
         let duration = audioPlayer.getTrackDuration(for: url)
-        let showFullInfo = index == 0 ||
-                          previousMetadata?.artist != metadata.artist ||
-                          previousMetadata?.album != metadata.album
+        let showFullInfo = previousMetadata == nil ||
+                           previousMetadata?.artist != metadata.artist ||
+                           previousMetadata?.album != metadata.album
 
         Button(action: onSelect) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     if showFullInfo {
-                        // Show artist and album on first line
                         Text("\(metadata.artist) • \(metadata.album)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .lineLimit(1)
                     }
-
-                    // Show title with 2-character indent
                     HStack(spacing: 0) {
                         Text("  ")
                             .font(.caption)
@@ -518,9 +594,7 @@ struct PlaylistItemView: View {
                             .foregroundColor(isCurrentTrack ? Color(white: 0.45) : .primary)
                     }
                 }
-
                 Spacer()
-
                 Text(timeString(from: duration))
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -536,9 +610,7 @@ struct PlaylistItemView: View {
     }
 
     private func timeString(from seconds: Double) -> String {
-        let minutes = Int(seconds) / 60
-        let seconds = Int(seconds) % 60
-        return String(format: "%d:%02d", minutes, seconds)
+        String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
 }
 
