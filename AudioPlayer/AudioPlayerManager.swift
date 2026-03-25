@@ -24,8 +24,16 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var copyright = ""
     @Published var sampleRate = ""
     @Published var bitDepth = ""
-    @Published var albumArtwork: NSImage?
+    // All artwork images for the current track: embedded first, then image
+    // files found in the track's directory and its subdirectories.
+    @Published var artworkImages: [NSImage] = []
+    @Published var currentArtworkIndex: Int = 0
     @Published var isTrackLoaded = false
+
+    func cycleArtwork() {
+        guard artworkImages.count > 1 else { return }
+        currentArtworkIndex = (currentArtworkIndex + 1) % artworkImages.count
+    }
 
     @Published var playlist: [URL] = []
     @Published var currentTrackIndex: Int = 0
@@ -63,10 +71,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var playbackStartTime: Date?
     private var playbackStartPosition: Double = 0
     private var metadataCache: [URL: TrackMetadata] = [:]
+    private var durationCache: [URL: TimeInterval] = [:]
 
-    // Cover art cycling state
-    private var folderImages: [NSImage] = []
-    private var currentArtworkIndex: Int = 0
+    // Incremented on every loadTrack call so background loads from a
+    // previous request are discarded when the user switches tracks quickly.
+    private var loadGeneration = 0
+    private let loadQueue = DispatchQueue(label: "com.audioplayer.load", qos: .userInitiated)
 
     override init() {
         // Load EQ settings from UserDefaults before super.init
@@ -110,7 +120,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         audioEngine.setEQ(bassGain: Float(bassGain), trebleGain: Float(trebleGain))
     }
 
-    private func extractMetadata(from url: URL) {
+    private func extractMetadata(from url: URL, generation: Int) {
         let asset = AVURLAsset(url: url)
         let fallbackName = url.deletingPathExtension().lastPathComponent
 
@@ -130,7 +140,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 let copyrightText = try? await copyrightItems.first?.load(.stringValue)
                 let artworkData = try? await artworkItems.first?.load(.dataValue)
 
-                // Extract technical audio format information
                 var sampleRateText = ""
                 var bitDepthText = ""
 
@@ -141,36 +150,26 @@ class AudioPlayerManager: NSObject, ObservableObject {
                         if let basicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) {
                             let rate = basicDescription.pointee.mSampleRate
                             sampleRateText = String(format: "%.1f kHz", rate / 1000.0)
-
                             let bitsPerChannel = basicDescription.pointee.mBitsPerChannel
-                            if bitsPerChannel > 0 {
-                                bitDepthText = "\(bitsPerChannel)-bit"
-                            }
+                            if bitsPerChannel > 0 { bitDepthText = "\(bitsPerChannel)-bit" }
                         }
                     }
                 }
 
-                // Scan folder for images on background thread
-                let folderImgs = self.imageFilesInFolder(of: url)
-
                 await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
                     self.currentTrackName = (title != nil && !title!.isEmpty) ? title! : fallbackName
                     self.currentArtist = (artist != nil && !artist!.isEmpty) ? artist! : "Unknown Artist"
                     self.currentAlbum = (album != nil && !album!.isEmpty) ? album! : "Unknown Album"
                     self.copyright = copyrightText ?? ""
                     self.sampleRate = sampleRateText
                     self.bitDepth = bitDepthText
-
-                    // Build cover art cycling array: embedded artwork first, then folder images
-                    var images: [NSImage] = []
-                    if let artworkData = artworkData, let embeddedImage = NSImage(data: artworkData) {
-                        images.append(embeddedImage)
+                    if let artworkData = artworkData, let image = NSImage(data: artworkData) {
+                        // Embedded artwork goes first so it shows immediately.
+                        // Directory images may be appended later by scanDirectoryArtworks.
+                        self.artworkImages.insert(image, at: 0)
+                        self.currentArtworkIndex = 0
                     }
-                    images.append(contentsOf: folderImgs)
-
-                    self.folderImages = images
-                    self.currentArtworkIndex = 0
-                    self.albumArtwork = images.first
                 }
             } catch {
                 print("Error loading metadata: \(error.localizedDescription)")
@@ -178,38 +177,61 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
     }
 
+    /// Scans the track's directory and one level of subdirectories for image
+    /// files and appends them to artworkImages after any embedded artwork.
+    private func scanDirectoryArtworks(for url: URL, generation: Int) {
+        let directory = url.deletingLastPathComponent()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self, self.loadGeneration == generation else { return }
+            let fm = FileManager.default
+            var found: [NSImage] = []
+
+            guard let contents = try? fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { return }
+
+            let sorted = contents.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+
+            for item in sorted {
+                let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                if isDir {
+                    // One level into subdirectories
+                    if let sub = try? fm.contentsOfDirectory(
+                        at: item, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+                    ) {
+                        for subItem in sub.sorted(by: {
+                            $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+                        }) {
+                            if Self.imageExtensions.contains(subItem.pathExtension.lowercased()),
+                               let img = NSImage(contentsOf: subItem) {
+                                found.append(img)
+                            }
+                        }
+                    }
+                } else if Self.imageExtensions.contains(item.pathExtension.lowercased()),
+                          let img = NSImage(contentsOf: item) {
+                    found.append(img)
+                }
+            }
+
+            guard !found.isEmpty, self.loadGeneration == generation else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.loadGeneration == generation else { return }
+                self.artworkImages.append(contentsOf: found)
+            }
+        }
+    }
+
     private static let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "alac", "caf", "ogg", "wma"
     ]
-
     private static let imageExtensions: Set<String> = [
-        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp"
+        "jpg", "jpeg", "png", "gif", "tiff", "tif", "bmp", "webp"
     ]
-
-    /// Scan the same folder as the given audio file for image files (non-recursive).
-    private func imageFilesInFolder(of audioURL: URL) -> [NSImage] {
-        let folder = audioURL.deletingLastPathComponent()
-        let fm = FileManager.default
-
-        guard let contents = try? fm.contentsOfDirectory(
-            at: folder,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        let imageURLs = contents
-            .filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-
-        return imageURLs.compactMap { NSImage(contentsOf: $0) }
-    }
-
-    /// Cycle to the next cover image when the user clicks the album art.
-    func cycleArtwork() {
-        guard folderImages.count > 1 else { return }
-        currentArtworkIndex = (currentArtworkIndex + 1) % folderImages.count
-        albumArtwork = folderImages[currentArtworkIndex]
-    }
 
     func selectAudioFile() {
         let panel = NSOpenPanel()
@@ -242,6 +264,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
                 let wasEmpty = self.playlist.isEmpty
                 self.playlist.append(contentsOf: audioURLs)
+
+                // Pre-warm duration cache in the background so the playlist
+                // shows track lengths without any main-thread stalls.
+                for url in audioURLs {
+                    guard self.durationCache[url] == nil else { continue }
+                    DispatchQueue.global(qos: .utility).async { [weak self] in
+                        guard let file = try? AVAudioFile(forReading: url) else { return }
+                        let d = Double(file.length) / file.processingFormat.sampleRate
+                        DispatchQueue.main.async { self?.durationCache[url] = d }
+                    }
+                }
 
                 if wasEmpty {
                     self.currentTrackIndex = 0
@@ -277,55 +310,100 @@ class AudioPlayerManager: NSObject, ObservableObject {
         let url = playlist[index]
         currentTrackIndex = index
 
-        // Cancel any pending gap timer
+        // Stamp this load so any in-flight background load for a previous
+        // track can detect it has been superseded and bail out.
+        loadGeneration += 1
+        let generation = loadGeneration
+
         trackGapTimer?.invalidate()
         trackGapTimer = nil
 
-        // Soft-stop current playback (keep engine running for smooth transition)
         audioEngine.stopPlayer()
         stopTimer()
         isPlaying = false
+        isTrackLoaded = false
 
-        // Set fallback display name immediately (keep previous artwork until new metadata loads)
+        // Update UI immediately with what we know; metadata arrives async.
         currentTrackName = url.deletingPathExtension().lastPathComponent
         currentArtist = "Unknown Artist"
         currentAlbum = "Unknown Album"
         copyright = ""
         sampleRate = ""
         bitDepth = ""
-        // Note: albumArtwork is NOT cleared here — extractMetadata will update it
-        // This prevents the UI from flashing to the placeholder between tracks
+        artworkImages = []
+        currentArtworkIndex = 0
 
-        extractMetadata(from: url)
+        extractMetadata(from: url, generation: generation)
+        scanDirectoryArtworks(for: url, generation: generation)
 
-        do {
-            _ = try audioEngine.loadFile(url: url)
-            try audioEngine.prepareForPlayback()
-            audioEngine.setVolume(Float(volume))
-            updateEQ()
+        // Buffer the file on a background queue — this is the expensive step
+        // (decoding the entire audio file into PCM) and must not block the UI.
+        loadQueue.async { [weak self] in
+            guard let self = self, self.loadGeneration == generation else { return }
 
-            duration = audioEngine.duration
-            currentTime = 0
-            playbackStartPosition = 0
-            isTrackLoaded = true
+            do {
+                // Fast path: use the preloaded buffer if it matches this URL.
+                // Slow path: open and decode the file from scratch.
+                var file: AVAudioFile
+                var buffer: AVAudioPCMBuffer
 
-            if autoPlay {
-                try audioEngine.play()
-                isPlaying = true
-                playbackStartTime = Date()
+                var preFile: AVAudioFile?
+                var preBuf: AVAudioPCMBuffer?
+                var preURL: URL?
+                self.audioEngine.preloadQueue.sync {
+                    preFile = self.audioEngine.preloadedFile
+                    preBuf  = self.audioEngine.preloadedBuffer
+                    preURL  = self.audioEngine.preloadedURL
+                }
+
+                if preURL == url, let pf = preFile, let pb = preBuf {
+                    file   = pf
+                    buffer = pb
+                } else {
+                    file   = try AVAudioFile(forReading: url)
+                    buffer = try self.audioEngine.bufferFile(file)
+                }
+
+                guard self.loadGeneration == generation else { return }
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.loadGeneration == generation else { return }
+                    do {
+                        self.audioEngine.setContent(file: file, buffer: buffer)
+                        try self.audioEngine.prepareForPlayback()
+                        self.audioEngine.setVolume(Float(self.volume))
+                        self.updateEQ()
+
+                        let d = self.audioEngine.duration
+                        self.duration = d
+                        self.durationCache[url] = d
+                        self.currentTime = 0
+                        self.playbackStartPosition = 0
+                        self.isTrackLoaded = true
+
+                        if autoPlay {
+                            try self.audioEngine.play()
+                            self.isPlaying = true
+                            self.playbackStartTime = Date()
+                        }
+
+                        self.startTimer()
+                        self.preloadNextTrack(after: index)
+                    } catch {
+                        print("Error preparing playback: \(error.localizedDescription)")
+                        self.currentTrackName = "Error Loading Track"
+                        self.isTrackLoaded = false
+                        self.artworkImages = []
+                    }
+                }
+            } catch {
+                guard self.loadGeneration == generation else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.currentTrackName = "Error Loading Track"
+                    self?.isTrackLoaded = false
+                    self?.artworkImages = []
+                }
             }
-
-            startTimer()
-
-            // Preload the next track into memory
-            preloadNextTrack(after: index)
-        } catch {
-            print("Error loading audio file: \(error.localizedDescription)")
-            currentTrackName = "Error Loading Track"
-            isTrackLoaded = false
-            albumArtwork = nil
-            folderImages.removeAll()
-            currentArtworkIndex = 0
         }
     }
 
@@ -336,14 +414,18 @@ class AudioPlayerManager: NSObject, ObservableObject {
         audioEngine.preloadFile(url: nextURL)
     }
 
+    /// Always starts playback regardless of current play/pause state.
+    func startTrack(at index: Int) {
+        loadTrack(at: index, autoPlay: true)
+    }
+
     private func stopCurrentTrack() {
         trackGapTimer?.invalidate()
         trackGapTimer = nil
         audioEngine.stop()
         stopTimer()
         isPlaying = false
-        albumArtwork = nil
-        folderImages.removeAll()
+        artworkImages = []
         currentArtworkIndex = 0
         copyright = ""
         sampleRate = ""
@@ -411,6 +493,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         stopCurrentTrack()
         playlist.removeAll()
         metadataCache.removeAll()
+        durationCache.removeAll()
+        artworkImages = []
+        currentArtworkIndex = 0
         currentTrackIndex = 0
         currentTrackName = "No Track Loaded"
         currentArtist = "Unknown Artist"
@@ -421,9 +506,18 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     func getTrackDuration(for url: URL) -> TimeInterval {
-        // Use AVAudioFile for synchronous duration — no deprecated APIs
-        guard let file = try? AVAudioFile(forReading: url) else { return 0 }
-        return Double(file.length) / file.processingFormat.sampleRate
+        if let cached = durationCache[url] { return cached }
+        // Not yet cached — read on a background thread and refresh the UI when done.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let file = try? AVAudioFile(forReading: url) else { return }
+            let d = Double(file.length) / file.processingFormat.sampleRate
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.durationCache[url] = d
+                self.objectWillChange.send()
+            }
+        }
+        return 0
     }
 
     func getTrackMetadata(for url: URL) -> TrackMetadata {

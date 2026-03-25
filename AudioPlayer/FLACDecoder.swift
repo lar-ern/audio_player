@@ -14,10 +14,10 @@ class AudioEngine {
     private var playGeneration: Int = 0
 
     // Pre-buffered next track (protected by serial queue)
-    private var preloadedFile: AVAudioFile?
-    private var preloadedBuffer: AVAudioPCMBuffer?
-    private var preloadedURL: URL?
-    private let preloadQueue = DispatchQueue(label: "com.audioplayer.preload")
+    var preloadedFile: AVAudioFile?
+    var preloadedBuffer: AVAudioPCMBuffer?
+    var preloadedURL: URL?
+    let preloadQueue = DispatchQueue(label: "com.audioplayer.preload")
 
     var onPlaybackFinished: (() -> Void)?
 
@@ -59,7 +59,7 @@ class AudioEngine {
         engine.attach(eq)
     }
 
-    private func bufferFile(_ file: AVAudioFile) throws -> AVAudioPCMBuffer {
+    func bufferFile(_ file: AVAudioFile) throws -> AVAudioPCMBuffer {
         let format = file.processingFormat
         let frameCount = AVAudioFrameCount(file.length)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
@@ -106,6 +106,18 @@ class AudioEngine {
             return file
         } catch {
             throw AudioEngineError.unableToLoadFile(error.localizedDescription)
+        }
+    }
+
+    /// Set already-buffered content directly, bypassing the preload cache.
+    /// Call this from the main thread after background buffering is complete.
+    func setContent(file: AVAudioFile, buffer: AVAudioPCMBuffer) {
+        audioFile = file
+        audioBuffer = buffer
+        preloadQueue.sync {
+            preloadedFile = nil
+            preloadedBuffer = nil
+            preloadedURL = nil
         }
     }
 
