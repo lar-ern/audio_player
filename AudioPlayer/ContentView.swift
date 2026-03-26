@@ -640,10 +640,3 @@ struct PlaylistItemView: View {
         String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
 }
-
-#if DEBUG && canImport(DeveloperToolsSupport)
-#Preview {
-    ContentView()
-        .environmentObject(AudioPlayerManager())
-}
-#endif
