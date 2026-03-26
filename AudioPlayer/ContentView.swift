@@ -108,23 +108,26 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             )
         } else {
+            // Use LinearGradient directly as a View (it conforms to View) to avoid
+            // _ShapeView<RoundedRectangle, LinearGradient> which triggers a SwiftUI
+            // 4.6.3 internal assertion on macOS 13.7 / Intel Mac.
             base = AnyView(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(LinearGradient(
-                        gradient: Gradient(colors: [
-                            Color(white: 0.45),
-                            Color(white: 0.30),
-                            Color(white: 0.20)
-                        ]),
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 250, height: 250)
-                    .overlay(
-                        Image(systemName: "music.note")
-                            .font(.system(size: 80))
-                            .foregroundColor(.white.opacity(0.8))
-                    )
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color(white: 0.45),
+                        Color(white: 0.30),
+                        Color(white: 0.20)
+                    ]),
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .frame(width: 250, height: 250)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 80))
+                        .foregroundColor(.white.opacity(0.8))
+                )
             )
         }
         return base
