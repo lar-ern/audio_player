@@ -96,110 +96,114 @@ struct ContentView: View {
 
     private var playerControlsView: some View {
         VStack(spacing: 20) {
-            // Album art with overlay icons
+            // Album art with overlay icons.
+            // Both conditional branches must return a single View to avoid a
+            // _ConditionalContent<View, TupleView> assertion in SwiftUI 4.6.3
+            // (macOS 13.7). The music-note icon is composed via .overlay so the
+            // else branch also returns one view. The redundant outer ZStack is
+            // removed for the same reason.
             ZStack {
-                ZStack {
-                    if !audioPlayer.artworkImages.isEmpty {
-                        Image(nsImage: audioPlayer.artworkImages[audioPlayer.currentArtworkIndex])
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 250, height: 250)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    } else {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(LinearGradient(
-                                gradient: Gradient(colors: [
-                                    Color(white: 0.45),
-                                    Color(white: 0.30),
-                                    Color(white: 0.20)
-                                ]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ))
-                            .frame(width: 250, height: 250)
-
-                        Image(systemName: "music.note")
-                            .font(.system(size: 80))
-                            .foregroundColor(.white.opacity(0.8))
-                    }
+                if !audioPlayer.artworkImages.isEmpty {
+                    Image(nsImage: audioPlayer.artworkImages[audioPlayer.currentArtworkIndex])
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 250, height: 250)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color(white: 0.45),
+                                Color(white: 0.30),
+                                Color(white: 0.20)
+                            ]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                        .frame(width: 250, height: 250)
+                        .overlay(
+                            Image(systemName: "music.note")
+                                .font(.system(size: 80))
+                                .foregroundColor(.white.opacity(0.8))
+                        )
                 }
-                .shadow(radius: 10)
-                // Clicking cycles through available artwork images.
-                .onTapGesture { audioPlayer.cycleArtwork() }
-                .overlay(alignment: .bottom) {
-                    // Show counter when there is more than one image.
-                    if audioPlayer.artworkImages.count > 1 {
-                        Text("\(audioPlayer.currentArtworkIndex + 1) / \(audioPlayer.artworkImages.count)")
-                            .font(.caption2)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.black.opacity(0.55))
-                            .clipShape(Capsule())
-                            .padding(.bottom, 8)
-                    }
+            }
+            .shadow(radius: 10)
+            // Clicking cycles through available artwork images.
+            .onTapGesture { audioPlayer.cycleArtwork() }
+            .overlay(alignment: .bottom) {
+                // Show counter when there is more than one image.
+                if audioPlayer.artworkImages.count > 1 {
+                    Text("\(audioPlayer.currentArtworkIndex + 1) / \(audioPlayer.artworkImages.count)")
+                        .font(.caption2)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(Capsule())
+                        .padding(.bottom, 8)
                 }
-                .overlay(alignment: .topLeading) {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) { showSettingsPopup.toggle() }
-                    }) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 14))
-                            .foregroundColor(.white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .popover(isPresented: $showSettingsPopup, arrowEdge: .leading) {
-                        SettingsPopoverView(gapDuration: $audioPlayer.gapDuration)
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    AirPlayPickerView()
+            }
+            .overlay(alignment: .topLeading) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) { showSettingsPopup.toggle() }
+                }) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
                         .frame(width: 32, height: 32)
                         .background(Color.black.opacity(0.5))
                         .clipShape(Circle())
-                        .padding(8)
                 }
-                .overlay(alignment: .bottomLeading) {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) { showEQPopup.toggle() }
-                    }) {
-                        Image(systemName: "slider.vertical.3")
-                            .font(.system(size: 14))
-                            .foregroundColor(audioPlayer.eqEnabled ? Color(white: 0.75) : .white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .popover(isPresented: $showEQPopup, arrowEdge: .leading) {
-                        EQPopoverView(
-                            eqEnabled: $audioPlayer.eqEnabled,
-                            bassGain: $audioPlayer.bassGain,
-                            trebleGain: $audioPlayer.trebleGain
-                        )
-                    }
+                .buttonStyle(.plain)
+                .padding(8)
+                .popover(isPresented: $showSettingsPopup, arrowEdge: .leading) {
+                    SettingsPopoverView(gapDuration: $audioPlayer.gapDuration)
                 }
-                .overlay(alignment: .bottomTrailing) {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) { showVolumePopup.toggle() }
-                    }) {
-                        Image(systemName: volumeIcon)
-                            .font(.system(size: 14))
-                            .foregroundColor(.white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.black.opacity(0.5))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
+            }
+            .overlay(alignment: .topTrailing) {
+                AirPlayPickerView()
+                    .frame(width: 32, height: 32)
+                    .background(Color.black.opacity(0.5))
+                    .clipShape(Circle())
                     .padding(8)
-                    .popover(isPresented: $showVolumePopup, arrowEdge: .trailing) {
-                        VolumePopoverView(volume: $audioPlayer.volume)
-                    }
+            }
+            .overlay(alignment: .bottomLeading) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) { showEQPopup.toggle() }
+                }) {
+                    Image(systemName: "slider.vertical.3")
+                        .font(.system(size: 14))
+                        .foregroundColor(audioPlayer.eqEnabled ? Color(white: 0.75) : .white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .popover(isPresented: $showEQPopup, arrowEdge: .leading) {
+                    EQPopoverView(
+                        eqEnabled: $audioPlayer.eqEnabled,
+                        bassGain: $audioPlayer.bassGain,
+                        trebleGain: $audioPlayer.trebleGain
+                    )
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) { showVolumePopup.toggle() }
+                }) {
+                    Image(systemName: volumeIcon)
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .popover(isPresented: $showVolumePopup, arrowEdge: .trailing) {
+                    VolumePopoverView(volume: $audioPlayer.volume)
                 }
             }
 
