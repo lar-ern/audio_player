@@ -156,14 +156,16 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     }
                 }
 
+                let finalSampleRate = sampleRateText
+                let finalBitDepth = bitDepthText
                 await MainActor.run {
                     guard self.loadGeneration == generation else { return }
                     self.currentTrackName = (title != nil && !title!.isEmpty) ? title! : fallbackName
                     self.currentArtist = (artist != nil && !artist!.isEmpty) ? artist! : "Unknown Artist"
                     self.currentAlbum = (album != nil && !album!.isEmpty) ? album! : "Unknown Album"
                     self.copyright = copyrightText ?? ""
-                    self.sampleRate = sampleRateText
-                    self.bitDepth = bitDepthText
+                    self.sampleRate = finalSampleRate
+                    self.bitDepth = finalBitDepth
                     if let artworkData = artworkData, let image = NSImage(data: artworkData) {
                         // Embedded artwork goes first so it shows immediately.
                         // Directory images may be appended later by scanDirectoryArtworks.
