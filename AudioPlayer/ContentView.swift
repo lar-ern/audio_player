@@ -641,7 +641,9 @@ struct PlaylistItemView: View {
     }
 }
 
+#if DEBUG && canImport(DeveloperToolsSupport)
 #Preview {
     ContentView()
         .environmentObject(AudioPlayerManager())
 }
+#endif
