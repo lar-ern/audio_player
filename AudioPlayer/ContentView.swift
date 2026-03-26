@@ -92,42 +92,53 @@ struct ContentView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    // MARK: - Artwork view (type-erased for macOS 13.7 compatibility)
+
+    // SwiftUI 4.6.3 on macOS 13.7 asserts on _ConditionalContent<A, B> when
+    // A and B are different concrete shape/image types inside a ZStack. AnyView
+    // erases the type so the parent view builder never sees the raw conditional.
+    private var artworkBaseView: some View {
+        let base: AnyView
+        if !audioPlayer.artworkImages.isEmpty {
+            base = AnyView(
+                Image(nsImage: audioPlayer.artworkImages[audioPlayer.currentArtworkIndex])
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 250, height: 250)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            )
+        } else {
+            base = AnyView(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color(white: 0.45),
+                            Color(white: 0.30),
+                            Color(white: 0.20)
+                        ]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
+                    .frame(width: 250, height: 250)
+                    .overlay(
+                        Image(systemName: "music.note")
+                            .font(.system(size: 80))
+                            .foregroundColor(.white.opacity(0.8))
+                    )
+            )
+        }
+        return base
+    }
+
     // MARK: - Player controls (shared)
 
     private var playerControlsView: some View {
         VStack(spacing: 20) {
             // Album art with overlay icons.
-            // Both conditional branches must return a single View to avoid a
-            // _ConditionalContent<View, TupleView> assertion in SwiftUI 4.6.3
-            // (macOS 13.7). The music-note icon is composed via .overlay so the
-            // else branch also returns one view. The redundant outer ZStack is
-            // removed for the same reason.
-            ZStack {
-                if !audioPlayer.artworkImages.isEmpty {
-                    Image(nsImage: audioPlayer.artworkImages[audioPlayer.currentArtworkIndex])
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 250, height: 250)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(LinearGradient(
-                            gradient: Gradient(colors: [
-                                Color(white: 0.45),
-                                Color(white: 0.30),
-                                Color(white: 0.20)
-                            ]),
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                        .frame(width: 250, height: 250)
-                        .overlay(
-                            Image(systemName: "music.note")
-                                .font(.system(size: 80))
-                                .foregroundColor(.white.opacity(0.8))
-                        )
-                }
-            }
+            // AnyView erases the conditional type so SwiftUI 4.6.3 on macOS 13.7
+            // never sees _ConditionalContent<Image, RoundedRectangle> which
+            // triggers an internal assertion in that version of SwiftUI.
+            artworkBaseView
             .shadow(radius: 10)
             // Clicking cycles through available artwork images.
             .onTapGesture { audioPlayer.cycleArtwork() }
