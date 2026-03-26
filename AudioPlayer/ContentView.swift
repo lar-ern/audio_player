@@ -245,7 +245,7 @@ struct ContentView: View {
 
             // Progress bar
             VStack(spacing: 8) {
-                Slider(value: $audioPlayer.currentTime, in: 0...audioPlayer.duration) { editing in
+                Slider(value: $audioPlayer.currentTime, in: 0...max(audioPlayer.duration, 1.0)) { editing in
                     if !editing { audioPlayer.seek(to: audioPlayer.currentTime) }
                 }
                 .tint(Color(white: 0.50))
