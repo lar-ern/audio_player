@@ -4,9 +4,6 @@ import AVKit
 struct ContentView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
     @State private var isPlaylistExpanded = true
-    @State private var showVolumePopup = false
-    @State private var showEQPopup = false
-    @State private var showSettingsPopup = false
     @State private var searchText = ""
     @State private var isWideLayout = false
 
@@ -45,7 +42,7 @@ struct ContentView: View {
 
     private var tallLayout: some View {
         VStack(spacing: 20) {
-            playerControlsView
+            PlayerControlsView()
 
             if !audioPlayer.playlist.isEmpty {
                 playlistView(sidePanel: false)
@@ -62,7 +59,7 @@ struct ContentView: View {
         HStack(alignment: .top, spacing: 0) {
             // Left: player controls
             VStack(spacing: 20) {
-                playerControlsView
+                PlayerControlsView()
             }
             .padding(30)
             .frame(width: 380)
@@ -92,36 +89,125 @@ struct ContentView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    // MARK: - Artwork view
-    //
-    // Every SwiftUI-native implementation triggers a SwiftUI 4.6.3 internal assertion
-    // (_assertionFailure at SwiftUI+19950082) on macOS 13.7 / Intel Mac, regardless of
-    // view types used (LinearGradient, Color, AnyView, ZStack, conditional or not).
-    // The assertion fires from within any @ViewBuilder closure or modifier chain in this
-    // property. Using NSViewRepresentable makes SwiftUI treat the artwork as an opaque
-    // AppKit view, bypassing the problematic type-graph machinery entirely.
-    private var artworkBaseView: some View {
-        ArtworkDisplayView(
-            artworkImages: audioPlayer.artworkImages,
-            currentIndex: audioPlayer.currentArtworkIndex
-        )
-        .frame(width: 250, height: 250)
+    // MARK: - Playlist view (shared)
+
+    private func playlistView(sidePanel: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Header row
+            HStack(spacing: 6) {
+                Text("Playlist")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                // Search field — fills the space between label and toggle button
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    TextField("Search", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color(white: 0.18))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .frame(maxWidth: .infinity)
+
+                // Layout toggle
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        isWideLayout.toggle()
+                    }
+                }) {
+                    Image(systemName: isWideLayout ? "rectangle.split.1x2" : "rectangle.split.2x1")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
+
+                // Expand/collapse (tall layout only)
+                if !sidePanel {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            isPlaylistExpanded.toggle()
+                        }
+                    }) {
+                        Image(systemName: isPlaylistExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 5)
+
+            // Track list
+            let showList = sidePanel || isPlaylistExpanded
+            ScrollView {
+                VStack(spacing: 2) {
+                    if filteredPlaylist.isEmpty {
+                        Text("No results for \"\(searchText)\"")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        ForEach(filteredPlaylist, id: \.index) { item in
+                            let prevIndex = filteredPlaylist.first(where: { $0.index == item.index - 1 })?.index
+                            let prevMeta = prevIndex.map { audioPlayer.getTrackMetadata(for: audioPlayer.playlist[$0]) }
+                            PlaylistItemView(
+                                url: item.url,
+                                index: item.index,
+                                isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
+                                previousMetadata: prevMeta,
+                                onSelect: { audioPlayer.selectTrack(at: item.index) },
+                                onDoubleClick: { audioPlayer.startTrack(at: item.index) },
+                                audioPlayer: audioPlayer
+                            )
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: showList ? (sidePanel ? .infinity : 320) : 0)
+            .opacity(showList ? 1 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.05))
+            )
+        }
     }
 
-    // MARK: - Player controls (shared)
+}
 
-    private var playerControlsView: some View {
+// MARK: - Player controls
+//
+// Extracted into its own struct so SwiftUI sees an independent view node rather
+// than a monolithic inlined @ViewBuilder closure inside ContentView. A large
+// inlined computed-property body triggers a SwiftUI 4.6.3 internal assertion
+// (_assertionFailure at SwiftUI+19950082) on macOS 13.7 / Intel Mac.
+
+struct PlayerControlsView: View {
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
+    @State private var showVolumePopup = false
+    @State private var showEQPopup = false
+    @State private var showSettingsPopup = false
+
+    var body: some View {
         VStack(spacing: 20) {
-            // Album art with overlay icons.
-            // AnyView erases the conditional type so SwiftUI 4.6.3 on macOS 13.7
-            // never sees _ConditionalContent<Image, RoundedRectangle> which
-            // triggers an internal assertion in that version of SwiftUI.
             artworkBaseView
             .shadow(radius: 10)
-            // Clicking cycles through available artwork images.
             .onTapGesture { audioPlayer.cycleArtwork() }
             .overlay(alignment: .bottom) {
-                // Show counter when there is more than one image.
                 if audioPlayer.artworkImages.count > 1 {
                     Text("\(audioPlayer.currentArtworkIndex + 1) / \(audioPlayer.artworkImages.count)")
                         .font(.caption2)
@@ -313,102 +399,17 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Playlist view (shared)
-
-    private func playlistView(sidePanel: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Header row
-            HStack(spacing: 6) {
-                Text("Playlist")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                // Search field — fills the space between label and toggle button
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    TextField("Search", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(.caption)
-                    if !searchText.isEmpty {
-                        Button(action: { searchText = "" }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Color(white: 0.18))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-                .frame(maxWidth: .infinity)
-
-                // Layout toggle
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        isWideLayout.toggle()
-                    }
-                }) {
-                    Image(systemName: isWideLayout ? "rectangle.split.1x2" : "rectangle.split.2x1")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
-
-                // Expand/collapse (tall layout only)
-                if !sidePanel {
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            isPlaylistExpanded.toggle()
-                        }
-                    }) {
-                        Image(systemName: isPlaylistExpanded ? "chevron.down" : "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 5)
-
-            // Track list
-            let showList = sidePanel || isPlaylistExpanded
-            ScrollView {
-                VStack(spacing: 2) {
-                    if filteredPlaylist.isEmpty {
-                        Text("No results for \"\(searchText)\"")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.vertical, 8)
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        ForEach(filteredPlaylist, id: \.index) { item in
-                            let prevIndex = filteredPlaylist.first(where: { $0.index == item.index - 1 })?.index
-                            let prevMeta = prevIndex.map { audioPlayer.getTrackMetadata(for: audioPlayer.playlist[$0]) }
-                            PlaylistItemView(
-                                url: item.url,
-                                index: item.index,
-                                isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
-                                previousMetadata: prevMeta,
-                                onSelect: { audioPlayer.selectTrack(at: item.index) },
-                                onDoubleClick: { audioPlayer.startTrack(at: item.index) },
-                                audioPlayer: audioPlayer
-                            )
-                        }
-                    }
-                }
-            }
-            .frame(maxHeight: showList ? (sidePanel ? .infinity : 320) : 0)
-            .opacity(showList ? 1 : 0)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.primary.opacity(0.05))
-            )
-        }
+    // MARK: - Artwork view
+    //
+    // NSViewRepresentable makes SwiftUI treat the artwork as an opaque AppKit view,
+    // bypassing SwiftUI 4.6.3's type-graph machinery that triggers the internal
+    // assertion (_assertionFailure at SwiftUI+19950082) on macOS 13.7 / Intel Mac.
+    private var artworkBaseView: some View {
+        ArtworkDisplayView(
+            artworkImages: audioPlayer.artworkImages,
+            currentIndex: audioPlayer.currentArtworkIndex
+        )
+        .frame(width: 250, height: 250)
     }
 
     private var volumeIcon: String {
