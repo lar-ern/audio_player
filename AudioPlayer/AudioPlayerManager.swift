@@ -119,6 +119,25 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
         // Apply initial EQ settings
         updateEQ()
+
+        // When the audio output device changes (e.g. AirPlay device selected),
+        // AVAudioEngine stops itself. Restart playback at the current position
+        // so audio is routed to the newly selected device.
+        audioEngine.onConfigurationChange = { [weak self] in
+            guard let self = self, self.isPlaying else { return }
+            let position = self.currentTime
+            do {
+                try self.audioEngine.prepareForPlayback()
+                self.audioEngine.setVolume(Float(self.volume))
+                self.updateEQ()
+                try self.audioEngine.seek(to: position, forcePlay: true)
+                self.playbackStartTime = Date()
+                self.playbackStartPosition = position
+            } catch {
+                print("Audio route change: failed to resume — \(error.localizedDescription)")
+                self.isPlaying = false
+            }
+        }
     }
 
     private func updateEQ() {

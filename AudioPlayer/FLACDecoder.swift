@@ -21,6 +21,10 @@ class AudioEngine {
 
     var onPlaybackFinished: (() -> Void)?
 
+    // Called on the main thread when the audio output device changes (e.g. AirPlay
+    // selected). AVAudioEngine stops itself; the manager must restart playback.
+    var onConfigurationChange: (() -> Void)?
+
     init() {
         setupEngine()
     }
@@ -57,6 +61,25 @@ class AudioEngine {
         // Attach nodes
         engine.attach(player)
         engine.attach(eq)
+
+        // When the output device changes (AirPlay selected/deselected, USB audio
+        // plugged in, etc.) AVAudioEngine stops itself and fires this notification.
+        // We must reconnect nodes and restart playback on the new device.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange(_:)),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
+        )
+    }
+
+    @objc private func handleEngineConfigurationChange(_ notification: Notification) {
+        // Force node reconnection on the next prepareForPlayback() call,
+        // since the new output device may have a different format/sample rate.
+        connectedFormat = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.onConfigurationChange?()
+        }
     }
 
     func bufferFile(_ file: AVAudioFile) throws -> AVAudioPCMBuffer {
@@ -213,7 +236,7 @@ class AudioEngine {
         connectedFormat = nil
     }
 
-    func seek(to time: TimeInterval) throws {
+    func seek(to time: TimeInterval, forcePlay: Bool = false) throws {
         guard let file = audioFile,
               let buffer = audioBuffer,
               let player = playerNode,
@@ -260,7 +283,7 @@ class AudioEngine {
             try engine.start()
         }
 
-        if wasPlaying {
+        if wasPlaying || forcePlay {
             player.play()
         }
     }
@@ -291,6 +314,7 @@ class AudioEngine {
     }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         stop()
     }
 }
