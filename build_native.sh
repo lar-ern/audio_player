@@ -99,18 +99,13 @@ COMMON_FLAGS=(
     -framework AVFoundation
     -framework AppKit
     -framework Foundation
-    -Xfrontend -disable-reflection-metadata   # smaller binary; not needed at runtime
+    # NOTE: -disable-reflection-metadata was removed. SwiftUI 4.6.3 on macOS 13.7
+    # uses reflection metadata in its AttributeGraph to inspect view types at
+    # runtime. Stripping it caused _assertionFailure at SwiftUI+19950082 on startup.
     -o "$BINARY"
 )
 
-# Remove -disable-reflection-metadata if the compiler doesn't support it
-# (older swiftc will error; catch and retry without it)
-if ! "$SWIFT" "${COMMON_FLAGS[@]}" "${SOURCES[@]}" 2>/dev/null; then
-    echo "(retrying without -disable-reflection-metadata...)"
-    COMMON_FLAGS=("${COMMON_FLAGS[@]//-Xfrontend/}")
-    COMMON_FLAGS=("${COMMON_FLAGS[@]//-disable-reflection-metadata/}")
-    "$SWIFT" "${COMMON_FLAGS[@]}" "${SOURCES[@]}"
-fi
+"$SWIFT" "${COMMON_FLAGS[@]}" "${SOURCES[@]}"
 
 # On Apple Silicon host: also compile an x86_64 slice and lipo them together
 if [ "$HOST_ARCH" != "x86_64" ]; then

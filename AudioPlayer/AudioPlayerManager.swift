@@ -38,6 +38,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var playlist: [URL] = []
     @Published var currentTrackIndex: Int = 0
 
+    // UI state — stored here so views can access via @EnvironmentObject without
+    // @Binding, avoiding the SwiftUI 4.6.3 assertion on macOS 13.7 that fires
+    // when a view with @Binding properties has _ConditionalContent in its body.
+    @Published var searchText: String = ""
+    @Published var isWideLayout: Bool = false
+
     // EQ properties with UserDefaults persistence
     @Published var eqEnabled: Bool {
         didSet {
