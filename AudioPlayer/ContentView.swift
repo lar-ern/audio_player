@@ -17,7 +17,7 @@ struct RootLayoutView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
 
     var body: some View {
-        AnyView(audioPlayer.isWideLayout ? WideLayoutView() : TallLayoutView())
+        (audioPlayer.isWideLayout ? AnyView(WideLayoutView()) : AnyView(TallLayoutView()))
             .background(Color(white: 0.10))
             .foregroundColor(Color(white: 0.85))
             .tint(Color(white: 0.50))
