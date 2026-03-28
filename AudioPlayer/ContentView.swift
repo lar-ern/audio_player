@@ -94,42 +94,18 @@ struct ContentView: View {
 
     // MARK: - Artwork view
     //
-    // Previous approaches used AnyView + if/else (producing _ConditionalContent<Image, Shape>)
-    // and the deprecated overlay(_:alignment:) API. Both triggered a SwiftUI 4.6.3
-    // internal assertion (_assertionFailure at SwiftUI+19950082) on macOS 13.7 Intel Mac.
-    //
-    // Fix: ZStack where LinearGradient is always present as layer 1 (no conditional
-    // between two incompatible types), artwork is optional (if without else →
-    // Optional<V>, not _ConditionalContent<A,B>), and the music note uses .opacity()
-    // rather than the deprecated overlay(_:) call.
+    // Every SwiftUI-native implementation triggers a SwiftUI 4.6.3 internal assertion
+    // (_assertionFailure at SwiftUI+19950082) on macOS 13.7 / Intel Mac, regardless of
+    // view types used (LinearGradient, Color, AnyView, ZStack, conditional or not).
+    // The assertion fires from within any @ViewBuilder closure or modifier chain in this
+    // property. Using NSViewRepresentable makes SwiftUI treat the artwork as an opaque
+    // AppKit view, bypassing the problematic type-graph machinery entirely.
     private var artworkBaseView: some View {
-        ZStack(alignment: .center) {
-            // Gradient background — always in the ZStack, never a conditional branch,
-            // so SwiftUI never sees _ConditionalContent<Image, LinearGradient>.
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(white: 0.45),
-                    Color(white: 0.30),
-                    Color(white: 0.20)
-                ]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            // Artwork: single 'if' without 'else' → Optional<V>, not _ConditionalContent.
-            if !audioPlayer.artworkImages.isEmpty {
-                Image(nsImage: audioPlayer.artworkImages[audioPlayer.currentArtworkIndex])
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            }
-            // Music note icon: always in the hierarchy, hidden via opacity when artwork
-            // is present. Avoids the deprecated overlay(_:alignment:) API entirely.
-            Image(systemName: "music.note")
-                .font(.system(size: 80))
-                .foregroundColor(.white.opacity(0.8))
-                .opacity(audioPlayer.artworkImages.isEmpty ? 1.0 : 0.0)
-        }
+        ArtworkDisplayView(
+            artworkImages: audioPlayer.artworkImages,
+            currentIndex: audioPlayer.currentArtworkIndex
+        )
         .frame(width: 250, height: 250)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Player controls (shared)
@@ -655,5 +631,92 @@ struct PlaylistItemView: View {
 
     private func timeString(from seconds: Double) -> String {
         String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
+    }
+}
+
+// MARK: - Artwork display (AppKit-backed)
+//
+// NSViewRepresentable wrapper so SwiftUI treats the artwork area as an opaque
+// AppKit view. All rendering (gradient, image, music-note icon) is done in
+// Core Animation / AppKit, completely outside SwiftUI's type-graph machinery.
+
+struct ArtworkDisplayView: NSViewRepresentable {
+    let artworkImages: [NSImage]
+    let currentIndex: Int
+
+    func makeNSView(context: Context) -> ArtworkAppKitView {
+        ArtworkAppKitView()
+    }
+
+    func updateNSView(_ nsView: ArtworkAppKitView, context: Context) {
+        nsView.update(images: artworkImages, index: currentIndex)
+    }
+}
+
+final class ArtworkAppKitView: NSView {
+    private let gradientLayer = CAGradientLayer()
+    private let imageLayer    = CALayer()
+    private let symbolView    = NSImageView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius  = 12
+        layer?.masksToBounds = true
+
+        // Gradient placeholder background (top-leading → bottom-trailing).
+        // CAGradientLayer uses unit coords with y=0 at bottom, y=1 at top.
+        gradientLayer.colors = [
+            NSColor(white: 0.45, alpha: 1).cgColor,
+            NSColor(white: 0.30, alpha: 1).cgColor,
+            NSColor(white: 0.20, alpha: 1).cgColor,
+        ]
+        gradientLayer.startPoint = CGPoint(x: 0, y: 1) // top-left
+        gradientLayer.endPoint   = CGPoint(x: 1, y: 0) // bottom-right
+        layer?.addSublayer(gradientLayer)
+
+        // Artwork image layer (hidden until artwork is available).
+        imageLayer.contentsGravity = .resizeAspectFill
+        imageLayer.masksToBounds   = true
+        imageLayer.isHidden        = true
+        layer?.addSublayer(imageLayer)
+
+        // Music-note icon (SF Symbol, macOS 11+).
+        if let sym = NSImage(systemSymbolName: "music.note",
+                             accessibilityDescription: nil) {
+            let cfg = NSImage.SymbolConfiguration(pointSize: 80, weight: .regular)
+            symbolView.image = sym.withSymbolConfiguration(cfg)
+        }
+        symbolView.contentTintColor = NSColor(white: 1.0, alpha: 0.8)
+        symbolView.imageScaling     = .scaleNone
+        symbolView.imageAlignment   = .alignCenter
+        addSubview(symbolView)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        gradientLayer.frame = bounds
+        imageLayer.frame    = bounds
+        CATransaction.commit()
+        symbolView.frame = bounds
+    }
+
+    func update(images: [NSImage], index: Int) {
+        if images.isEmpty {
+            imageLayer.contents = nil
+            imageLayer.isHidden = true
+            gradientLayer.isHidden = false
+            symbolView.isHidden    = false
+        } else {
+            let i = min(index, images.count - 1)
+            imageLayer.contents    = images[i]
+            imageLayer.isHidden    = false
+            gradientLayer.isHidden = true
+            symbolView.isHidden    = true
+        }
     }
 }
