@@ -25,6 +25,18 @@ class AudioEngine {
     // selected). AVAudioEngine stops itself; the manager must restart playback.
     var onConfigurationChange: (() -> Void)?
 
+    // CoreAudio property listener blocks — stored so we can remove them in deinit.
+    private var devicesListenerBlock: AudioObjectPropertyListenerBlock?
+    private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
+
+    // Track which CoreAudio device the engine is currently pointed at so we
+    // can skip no-op switches and detect when AirPlay is deselected.
+    private var currentOutputDeviceID: AudioDeviceID = kAudioObjectUnknown
+
+    // Prevents double-handling when both the CoreAudio listener and
+    // AVAudioEngineConfigurationChangeNotification fire for the same event.
+    private var isHandlingDeviceChange = false
+
     init() {
         setupEngine()
     }
@@ -62,23 +74,150 @@ class AudioEngine {
         engine.attach(player)
         engine.attach(eq)
 
-        // When the output device changes (AirPlay selected/deselected, USB audio
-        // plugged in, etc.) AVAudioEngine stops itself and fires this notification.
-        // We must reconnect nodes and restart playback on the new device.
+        // AVAudioEngine stops itself when the system output device changes and
+        // fires this notification. We restart playback on the new device.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleEngineConfigurationChange(_:)),
             name: .AVAudioEngineConfigurationChange,
             object: engine
         )
+
+        // CoreAudio-level monitoring catches device changes that the engine
+        // notification misses — in particular, AVRoutePickerView selecting AirPlay
+        // creates a virtual CoreAudio output device and becomes the system default.
+        setupOutputDeviceMonitoring()
     }
 
     @objc private func handleEngineConfigurationChange(_ notification: Notification) {
-        // Force node reconnection on the next prepareForPlayback() call,
-        // since the new output device may have a different format/sample rate.
+        // Skip if CoreAudio monitoring already triggered a switchover.
+        guard !isHandlingDeviceChange else { return }
         connectedFormat = nil
         DispatchQueue.main.async { [weak self] in
             self?.onConfigurationChange?()
+        }
+    }
+
+    // MARK: - CoreAudio output device monitoring
+
+    private func setupOutputDeviceMonitoring() {
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+
+        // Watch for AirPlay device appearing / disappearing (device-list change).
+        let devBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async { self?.handleAudioDevicesChanged() }
+        }
+        devicesListenerBlock = devBlock
+        var devAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(systemObject, &devAddr, nil, devBlock)
+
+        // Watch for the system default output changing (covers Control-Centre
+        // AirPlay toggle and route-picker selections that update the system default).
+        let defaultBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async { self?.handleDefaultOutputDeviceChanged() }
+        }
+        defaultOutputListenerBlock = defaultBlock
+        var defaultAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(systemObject, &defaultAddr, nil, defaultBlock)
+    }
+
+    private func handleAudioDevicesChanged() {
+        // AirPlay device appeared → switch engine to it.
+        // AirPlay device disappeared → fall back to system default.
+        if let airPlayID = firstAirPlayOutputDeviceID() {
+            guard airPlayID != currentOutputDeviceID else { return }
+            switchEngineTo(deviceID: airPlayID)
+        } else if isAirPlayDevice(currentOutputDeviceID) {
+            // Our AirPlay device vanished; fall back to system default.
+            let defaultID = systemDefaultOutputDeviceID()
+            guard defaultID != kAudioObjectUnknown else { return }
+            switchEngineTo(deviceID: defaultID)
+        }
+    }
+
+    private func handleDefaultOutputDeviceChanged() {
+        let newID = systemDefaultOutputDeviceID()
+        guard newID != kAudioObjectUnknown, newID != currentOutputDeviceID else { return }
+        switchEngineTo(deviceID: newID)
+    }
+
+    private func switchEngineTo(deviceID: AudioDeviceID) {
+        guard !isHandlingDeviceChange else { return }
+        isHandlingDeviceChange = true
+        currentOutputDeviceID = deviceID
+
+        // Stop the engine, point its output node at the new device, then
+        // signal the manager to reconnect nodes and resume playback.
+        engine?.stop()
+        engine?.outputNode.auAudioUnit.deviceID = deviceID
+        connectedFormat = nil
+
+        DispatchQueue.main.async { [weak self] in
+            self?.onConfigurationChange?()
+            self?.isHandlingDeviceChange = false
+        }
+    }
+
+    // MARK: - CoreAudio helpers
+
+    private func firstAirPlayOutputDeviceID() -> AudioDeviceID? {
+        allOutputDeviceIDs().first { isAirPlayDevice($0) }
+    }
+
+    private func isAirPlayDevice(_ deviceID: AudioDeviceID) -> Bool {
+        guard deviceID != kAudioObjectUnknown else { return false }
+        var type: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectGetPropertyData(deviceID, &addr, 0, nil, &size, &type)
+        return type == 0x61697270 // 'airp' — kAudioDeviceTransportTypeAirPlay
+    }
+
+    private func systemDefaultOutputDeviceID() -> AudioDeviceID {
+        var id: AudioDeviceID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &id)
+        return id
+    }
+
+    private func allOutputDeviceIDs() -> [AudioDeviceID] {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioDeviceID](repeating: kAudioObjectUnknown,
+                                  count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids)
+        // Filter to devices that have output streams.
+        return ids.filter { id in
+            var outAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var outSize: UInt32 = 0
+            return AudioObjectGetPropertyDataSize(id, &outAddr, 0, nil, &outSize) == noErr && outSize > 0
         }
     }
 
@@ -314,6 +453,23 @@ class AudioEngine {
     }
 
     deinit {
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        if let block = devicesListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDevices,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(systemObject, &addr, nil, block)
+        }
+        if let block = defaultOutputListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(systemObject, &addr, nil, block)
+        }
         NotificationCenter.default.removeObserver(self)
         stop()
     }
