@@ -34,9 +34,7 @@ struct TallLayoutView: View {
     var body: some View {
         VStack(spacing: 20) {
             PlayerControlsView()
-            if !audioPlayer.playlist.isEmpty {
-                PlaylistView(sidePanel: false, searchText: $searchText, isWideLayout: $isWideLayout)
-            }
+            PlaylistView(sidePanel: false, searchText: $searchText, isWideLayout: $isWideLayout)
         }
         .padding(30)
         .frame(width: 480)
@@ -63,21 +61,9 @@ struct WideLayoutView: View {
                 .fill(Color(white: 0.20))
                 .frame(width: 1)
 
-            Group {
-                if audioPlayer.playlist.isEmpty {
-                    VStack {
-                        Spacer()
-                        Text("No tracks loaded")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-                } else {
-                    PlaylistView(sidePanel: true, searchText: $searchText, isWideLayout: $isWideLayout)
-                        .padding(16)
-                }
-            }
-            .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            PlaylistView(sidePanel: true, searchText: $searchText, isWideLayout: $isWideLayout)
+                .padding(16)
+                .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minHeight: 560)
         .fixedSize(horizontal: false, vertical: true)
@@ -110,6 +96,28 @@ struct PlaylistView: View {
     }
 
     var body: some View {
+        // Empty state: sidePanel shows placeholder; tall layout shows nothing.
+        // Handled here so TallLayoutView/WideLayoutView need no conditionals over
+        // PlaylistView — _ConditionalContent<PlaylistView, EmptyView> in a parent
+        // body with @Binding properties triggers the SwiftUI 4.6.3 assertion on
+        // macOS 13.7 / Intel Mac (_assertionFailure at SwiftUI+19950082).
+        if audioPlayer.playlist.isEmpty {
+            if sidePanel {
+                VStack {
+                    Spacer()
+                    Text("No tracks loaded")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+            }
+            // Non-sidePanel + empty: fall through to EmptyView (no tracks = no list)
+        } else {
+            playlistContent
+        }
+    }
+
+    private var playlistContent: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("Playlist")
