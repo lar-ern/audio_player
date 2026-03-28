@@ -3,12 +3,96 @@ import AVKit
 
 struct ContentView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
-    @State private var isPlaylistExpanded = true
     @State private var searchText = ""
     @State private var isWideLayout = false
 
-    // Filtered playlist as (originalIndex, url) pairs so tapping a search
-    // result still plays the correct track in the full playlist.
+    var body: some View {
+        Group {
+            if isWideLayout {
+                WideLayoutView(searchText: $searchText, isWideLayout: $isWideLayout)
+            } else {
+                TallLayoutView(searchText: $searchText, isWideLayout: $isWideLayout)
+            }
+        }
+        .background(Color(white: 0.10))
+        .foregroundColor(Color(white: 0.85))
+        .tint(Color(white: 0.50))
+    }
+}
+
+// MARK: - Tall layout
+//
+// Extracted from ContentView to avoid the SwiftUI 4.6.3 assertion
+// (_assertionFailure at SwiftUI+19950082) that fires from any large
+// @ViewBuilder closure evaluated in ContentView's type context on macOS 13.7.
+
+struct TallLayoutView: View {
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
+    @Binding var searchText: String
+    @Binding var isWideLayout: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            PlayerControlsView()
+            if !audioPlayer.playlist.isEmpty {
+                PlaylistView(sidePanel: false, searchText: $searchText, isWideLayout: $isWideLayout)
+            }
+        }
+        .padding(30)
+        .frame(width: 480)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Wide layout
+
+struct WideLayoutView: View {
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
+    @Binding var searchText: String
+    @Binding var isWideLayout: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 20) {
+                PlayerControlsView()
+            }
+            .padding(30)
+            .frame(width: 380)
+
+            Rectangle()
+                .fill(Color(white: 0.20))
+                .frame(width: 1)
+
+            Group {
+                if audioPlayer.playlist.isEmpty {
+                    VStack {
+                        Spacer()
+                        Text("No tracks loaded")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+                } else {
+                    PlaylistView(sidePanel: true, searchText: $searchText, isWideLayout: $isWideLayout)
+                        .padding(16)
+                }
+            }
+            .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minHeight: 560)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Playlist view
+
+struct PlaylistView: View {
+    let sidePanel: Bool
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
+    @Binding var searchText: String
+    @Binding var isWideLayout: Bool
+    @State private var isPlaylistExpanded = true
+
     private var filteredPlaylist: [(index: Int, url: URL)] {
         if searchText.isEmpty {
             return audioPlayer.playlist.enumerated().map { (index: $0.offset, url: $0.element) }
@@ -26,80 +110,12 @@ struct ContentView: View {
     }
 
     var body: some View {
-        Group {
-            if isWideLayout {
-                wideLayout
-            } else {
-                tallLayout
-            }
-        }
-        .background(Color(white: 0.10))
-        .foregroundColor(Color(white: 0.85))
-        .tint(Color(white: 0.50))
-    }
-
-    // MARK: - Tall layout (default)
-
-    private var tallLayout: some View {
-        VStack(spacing: 20) {
-            PlayerControlsView()
-
-            if !audioPlayer.playlist.isEmpty {
-                playlistView(sidePanel: false)
-            }
-        }
-        .padding(30)
-        .frame(width: 480)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: - Wide layout
-
-    private var wideLayout: some View {
-        HStack(alignment: .top, spacing: 0) {
-            // Left: player controls
-            VStack(spacing: 20) {
-                PlayerControlsView()
-            }
-            .padding(30)
-            .frame(width: 380)
-
-            Rectangle()
-                .fill(Color(white: 0.20))
-                .frame(width: 1)
-
-            // Right: search + track list
-            Group {
-                if audioPlayer.playlist.isEmpty {
-                    VStack {
-                        Spacer()
-                        Text("No tracks loaded")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-                } else {
-                    playlistView(sidePanel: true)
-                        .padding(16)
-                }
-            }
-            .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(minHeight: 560)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: - Playlist view (shared)
-
-    private func playlistView(sidePanel: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Header row
             HStack(spacing: 6) {
                 Text("Playlist")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                // Search field — fills the space between label and toggle button
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass")
                         .font(.caption2)
@@ -122,7 +138,6 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 5))
                 .frame(maxWidth: .infinity)
 
-                // Layout toggle
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         isWideLayout.toggle()
@@ -135,7 +150,6 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .help(isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
 
-                // Expand/collapse (tall layout only)
                 if !sidePanel {
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.3)) {
@@ -151,7 +165,6 @@ struct ContentView: View {
             }
             .padding(.horizontal, 5)
 
-            // Track list
             let showList = sidePanel || isPlaylistExpanded
             ScrollView {
                 VStack(spacing: 2) {
@@ -186,7 +199,6 @@ struct ContentView: View {
             )
         }
     }
-
 }
 
 // MARK: - Player controls
