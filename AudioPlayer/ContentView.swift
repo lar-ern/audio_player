@@ -92,45 +92,44 @@ struct ContentView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    // MARK: - Artwork view (type-erased for macOS 13.7 compatibility)
-
-    // SwiftUI 4.6.3 on macOS 13.7 asserts on _ConditionalContent<A, B> when
-    // A and B are different concrete shape/image types inside a ZStack. AnyView
-    // erases the type so the parent view builder never sees the raw conditional.
+    // MARK: - Artwork view
+    //
+    // Previous approaches used AnyView + if/else (producing _ConditionalContent<Image, Shape>)
+    // and the deprecated overlay(_:alignment:) API. Both triggered a SwiftUI 4.6.3
+    // internal assertion (_assertionFailure at SwiftUI+19950082) on macOS 13.7 Intel Mac.
+    //
+    // Fix: ZStack where LinearGradient is always present as layer 1 (no conditional
+    // between two incompatible types), artwork is optional (if without else →
+    // Optional<V>, not _ConditionalContent<A,B>), and the music note uses .opacity()
+    // rather than the deprecated overlay(_:) call.
     private var artworkBaseView: some View {
-        let base: AnyView
-        if !audioPlayer.artworkImages.isEmpty {
-            base = AnyView(
+        ZStack(alignment: .center) {
+            // Gradient background — always in the ZStack, never a conditional branch,
+            // so SwiftUI never sees _ConditionalContent<Image, LinearGradient>.
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(white: 0.45),
+                    Color(white: 0.30),
+                    Color(white: 0.20)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            // Artwork: single 'if' without 'else' → Optional<V>, not _ConditionalContent.
+            if !audioPlayer.artworkImages.isEmpty {
                 Image(nsImage: audioPlayer.artworkImages[audioPlayer.currentArtworkIndex])
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 250, height: 250)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            )
-        } else {
-            // Use LinearGradient directly as a View (it conforms to View) to avoid
-            // _ShapeView<RoundedRectangle, LinearGradient> which triggers a SwiftUI
-            // 4.6.3 internal assertion on macOS 13.7 / Intel Mac.
-            base = AnyView(
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color(white: 0.45),
-                        Color(white: 0.30),
-                        Color(white: 0.20)
-                    ]),
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .frame(width: 250, height: 250)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    Image(systemName: "music.note")
-                        .font(.system(size: 80))
-                        .foregroundColor(.white.opacity(0.8))
-                )
-            )
+            }
+            // Music note icon: always in the hierarchy, hidden via opacity when artwork
+            // is present. Avoids the deprecated overlay(_:alignment:) API entirely.
+            Image(systemName: "music.note")
+                .font(.system(size: 80))
+                .foregroundColor(.white.opacity(0.8))
+                .opacity(audioPlayer.artworkImages.isEmpty ? 1.0 : 0.0)
         }
-        return base
+        .frame(width: 250, height: 250)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Player controls (shared)
