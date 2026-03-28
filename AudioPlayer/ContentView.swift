@@ -3,15 +3,13 @@ import AVKit
 
 struct ContentView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
-    @State private var searchText = ""
-    @State private var isWideLayout = false
 
     var body: some View {
         Group {
-            if isWideLayout {
-                WideLayoutView(searchText: $searchText, isWideLayout: $isWideLayout)
+            if audioPlayer.isWideLayout {
+                WideLayoutView()
             } else {
-                TallLayoutView(searchText: $searchText, isWideLayout: $isWideLayout)
+                TallLayoutView()
             }
         }
         .background(Color(white: 0.10))
@@ -28,13 +26,11 @@ struct ContentView: View {
 
 struct TallLayoutView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
-    @Binding var searchText: String
-    @Binding var isWideLayout: Bool
 
     var body: some View {
         VStack(spacing: 20) {
             PlayerControlsView()
-            PlaylistView(sidePanel: false, searchText: $searchText, isWideLayout: $isWideLayout)
+            PlaylistView(sidePanel: false)
         }
         .padding(30)
         .frame(width: 480)
@@ -46,8 +42,6 @@ struct TallLayoutView: View {
 
 struct WideLayoutView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
-    @Binding var searchText: String
-    @Binding var isWideLayout: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -61,7 +55,7 @@ struct WideLayoutView: View {
                 .fill(Color(white: 0.20))
                 .frame(width: 1)
 
-            PlaylistView(sidePanel: true, searchText: $searchText, isWideLayout: $isWideLayout)
+            PlaylistView(sidePanel: true)
                 .padding(16)
                 .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -75,15 +69,13 @@ struct WideLayoutView: View {
 struct PlaylistView: View {
     let sidePanel: Bool
     @EnvironmentObject var audioPlayer: AudioPlayerManager
-    @Binding var searchText: String
-    @Binding var isWideLayout: Bool
     @State private var isPlaylistExpanded = true
 
     private var filteredPlaylist: [(index: Int, url: URL)] {
-        if searchText.isEmpty {
+        if audioPlayer.searchText.isEmpty {
             return audioPlayer.playlist.enumerated().map { (index: $0.offset, url: $0.element) }
         }
-        let query = searchText.lowercased()
+        let query = audioPlayer.searchText.lowercased()
         return audioPlayer.playlist.enumerated().compactMap { offset, url in
             let meta = audioPlayer.getTrackMetadata(for: url)
             if meta.title.lowercased().contains(query) ||
@@ -128,11 +120,11 @@ struct PlaylistView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    TextField("Search", text: $searchText)
+                    TextField("Search", text: $audioPlayer.searchText)
                         .textFieldStyle(.plain)
                         .font(.caption)
-                    if !searchText.isEmpty {
-                        Button(action: { searchText = "" }) {
+                    if !audioPlayer.searchText.isEmpty {
+                        Button(action: { audioPlayer.searchText = "" }) {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
@@ -148,15 +140,15 @@ struct PlaylistView: View {
 
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        isWideLayout.toggle()
+                        audioPlayer.isWideLayout.toggle()
                     }
                 }) {
-                    Image(systemName: isWideLayout ? "rectangle.split.1x2" : "rectangle.split.2x1")
+                    Image(systemName: audioPlayer.isWideLayout ? "rectangle.split.1x2" : "rectangle.split.2x1")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
+                .help(audioPlayer.isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
 
                 if !sidePanel {
                     Button(action: {
@@ -177,7 +169,7 @@ struct PlaylistView: View {
             ScrollView {
                 VStack(spacing: 2) {
                     if filteredPlaylist.isEmpty {
-                        Text("No results for \"\(searchText)\"")
+                        Text("No results for \"\(audioPlayer.searchText)\"")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.vertical, 8)
