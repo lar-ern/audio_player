@@ -1,15 +1,23 @@
 import SwiftUI
 import AVKit
 
+// ContentView is intentionally a zero-logic shell. Its body calls no SwiftUI API —
+// just a plain struct init — so SwiftUI+19950082 (_assertionFailure in SwiftUI 4.6.3
+// on macOS 13.7) cannot be triggered here. All layout logic lives in RootLayoutView.
 struct ContentView: View {
+    var body: some View {
+        RootLayoutView()
+    }
+}
+
+// RootLayoutView owns the wide/tall switch and theming. It is a non-root child view,
+// which avoids the specific code path in SwiftUI 4.6.3 that fires the assertion when
+// the root Window content view body calls AnyView.init or _ConditionalContent.
+struct RootLayoutView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
 
     var body: some View {
-        // AnyView erases _ConditionalContent<WideLayoutView, TallLayoutView> from
-        // ContentView.body's return type, avoiding the SwiftUI 4.6.3 assertion
-        // (_assertionFailure at SwiftUI+19950082) that fires on macOS 13.7 when
-        // _ConditionalContent appears in a view body with complex child types.
-        AnyView(audioPlayer.isWideLayout ? AnyView(WideLayoutView()) : AnyView(TallLayoutView()))
+        AnyView(audioPlayer.isWideLayout ? WideLayoutView() : TallLayoutView())
             .background(Color(white: 0.10))
             .foregroundColor(Color(white: 0.85))
             .tint(Color(white: 0.50))
