@@ -5,16 +5,14 @@ struct ContentView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
 
     var body: some View {
-        Group {
-            if audioPlayer.isWideLayout {
-                WideLayoutView()
-            } else {
-                TallLayoutView()
-            }
-        }
-        .background(Color(white: 0.10))
-        .foregroundColor(Color(white: 0.85))
-        .tint(Color(white: 0.50))
+        // AnyView erases _ConditionalContent<WideLayoutView, TallLayoutView> from
+        // ContentView.body's return type, avoiding the SwiftUI 4.6.3 assertion
+        // (_assertionFailure at SwiftUI+19950082) that fires on macOS 13.7 when
+        // _ConditionalContent appears in a view body with complex child types.
+        AnyView(audioPlayer.isWideLayout ? AnyView(WideLayoutView()) : AnyView(TallLayoutView()))
+            .background(Color(white: 0.10))
+            .foregroundColor(Color(white: 0.85))
+            .tint(Color(white: 0.50))
     }
 }
 
