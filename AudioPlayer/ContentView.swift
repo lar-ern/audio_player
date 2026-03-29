@@ -547,7 +547,19 @@ struct AudioOutputPickerView: NSViewRepresentable {
             AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &ids)
 
             return ids.compactMap { id -> (AudioDeviceID, String)? in
-                // Skip devices marked hidden by CoreAudio (aggregate devices, etc.)
+                // Skip aggregate/virtual devices (CADefaultDeviceAggregate, etc.)
+                var transportAddr = AudioObjectPropertyAddress(
+                    mSelector: kAudioDevicePropertyTransportType,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain)
+                var transport: UInt32 = 0
+                var transportSize = UInt32(MemoryLayout<UInt32>.size)
+                AudioObjectGetPropertyData(id, &transportAddr, 0, nil, &transportSize, &transport)
+                guard transport != kAudioDeviceTransportTypeAggregate,
+                      transport != kAudioDeviceTransportTypeAutoAggregate,
+                      transport != kAudioDeviceTransportTypeVirtual else { return nil }
+
+                // Skip devices explicitly marked hidden by CoreAudio.
                 var hiddenAddr = AudioObjectPropertyAddress(
                     mSelector: kAudioDevicePropertyIsHidden,
                     mScope: kAudioObjectPropertyScopeGlobal,
