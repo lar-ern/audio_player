@@ -156,8 +156,17 @@ class AudioEngine {
 
         // Stop the engine, point its output node at the new device, then
         // signal the manager to reconnect nodes and resume playback.
+        // auAudioUnit.deviceID is get-only in older SDKs; use the AudioUnit
+        // property API (kAudioOutputUnitProperty_CurrentDevice) instead.
         engine?.stop()
-        engine?.outputNode.auAudioUnit.deviceID = deviceID
+        if let au = engine?.outputNode.audioUnit {
+            var dev = deviceID
+            AudioUnitSetProperty(au,
+                                 kAudioOutputUnitProperty_CurrentDevice,
+                                 kAudioUnitScope_Global,
+                                 0, &dev,
+                                 UInt32(MemoryLayout<AudioDeviceID>.size))
+        }
         connectedFormat = nil
 
         DispatchQueue.main.async { [weak self] in
