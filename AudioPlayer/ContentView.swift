@@ -197,7 +197,7 @@ struct PlaylistView: View {
                     }
                 }
             }
-            .frame(maxHeight: showList ? (sidePanel ? .infinity : 320) : 0)
+            .frame(maxHeight: showList ? 500 : 0)
             .opacity(showList ? 1 : 0)
             .background(
                 RoundedRectangle(cornerRadius: 8)
