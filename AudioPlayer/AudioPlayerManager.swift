@@ -293,10 +293,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio, .folder]
-        panel.allowsOtherFileTypes = true
+        // Do NOT include UTType.folder here — folder selection is handled by
+        // canChooseDirectories = true. Mixing folder and file UTTypes in
+        // allowedContentTypes silently prevents the panel from opening on macOS 26.
+        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio]
+        panel.allowsOtherFileTypes = true   // lets M3U / FLAC / etc. through
 
-        panel.begin { [weak self] response in
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let self = self else { return }
 
             var seen = Set(self.playlist.map { $0.url.standardizedFileURL })
@@ -352,6 +355,14 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 self.currentTrackIndex = 0
                 self.loadTrack(at: 0)
             }
+        }
+
+        // Present as a sheet on the key window (preferred on macOS 14+/26).
+        // Fall back to runModal() if there is no window yet.
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            handler(panel.runModal())
         }
     }
 
