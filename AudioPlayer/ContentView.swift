@@ -547,6 +547,17 @@ struct AudioOutputPickerView: NSViewRepresentable {
             AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &ids)
 
             return ids.compactMap { id -> (AudioDeviceID, String)? in
+                // Skip devices marked hidden by CoreAudio (aggregate devices, etc.)
+                var hiddenAddr = AudioObjectPropertyAddress(
+                    mSelector: kAudioDevicePropertyIsHidden,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain)
+                var isHidden: UInt32 = 0
+                var hiddenSize = UInt32(MemoryLayout<UInt32>.size)
+                AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &isHidden)
+                guard isHidden == 0 else { return nil }
+
+                // Must have at least one output stream.
                 var outAddr = AudioObjectPropertyAddress(
                     mSelector: kAudioDevicePropertyStreams,
                     mScope: kAudioObjectPropertyScopeOutput,
@@ -555,15 +566,54 @@ struct AudioOutputPickerView: NSViewRepresentable {
                 guard AudioObjectGetPropertyDataSize(id, &outAddr, 0, nil, &outSize) == noErr,
                       outSize > 0 else { return nil }
 
-                var nameAddr = AudioObjectPropertyAddress(
-                    mSelector: kAudioObjectPropertyName,
-                    mScope: kAudioObjectPropertyScopeGlobal,
-                    mElement: kAudioObjectPropertyElementMain)
-                var nameSize = UInt32(MemoryLayout<CFString?>.size)
-                var cfName: CFString? = nil
-                AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName)
-                return (id, (cfName as String?) ?? "Unknown Device")
+                return (id, deviceDisplayName(for: id))
             }
+        }
+
+        // Returns the most user-friendly name for an output device.
+        // Tries the active output source name first (gives "Internal Speakers",
+        // "Headphones", or the specific AirPlay device name). Falls back to the
+        // HAL device name (e.g. "Built-in Output").
+        private func deviceDisplayName(for id: AudioDeviceID) -> String {
+            // 1. Get the active output source ID.
+            var srcAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDataSource,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain)
+            var sourceID: UInt32 = 0
+            var srcSize = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(id, &srcAddr, 0, nil, &srcSize, &sourceID) == noErr {
+                // 2. Translate source ID → source name.
+                var cfSourceName: CFString? = nil
+                withUnsafeMutablePointer(to: &cfSourceName) { namePtr in
+                    withUnsafeMutablePointer(to: &sourceID) { srcPtr in
+                        var translation = AudioValueTranslation(
+                            mInputData: srcPtr,
+                            mInputDataSize: UInt32(MemoryLayout<UInt32>.size),
+                            mOutputData: namePtr,
+                            mOutputDataSize: UInt32(MemoryLayout<CFString?>.size))
+                        var nameAddr = AudioObjectPropertyAddress(
+                            mSelector: kAudioDevicePropertyDataSourceNameForIDCFString,
+                            mScope: kAudioObjectPropertyScopeOutput,
+                            mElement: kAudioObjectPropertyElementMain)
+                        var translationSize = UInt32(MemoryLayout<AudioValueTranslation>.size)
+                        AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &translationSize, &translation)
+                    }
+                }
+                if let name = cfSourceName as String?, !name.isEmpty {
+                    return name
+                }
+            }
+
+            // 3. Fall back to the HAL device name.
+            var nameAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var nameSize = UInt32(MemoryLayout<CFString?>.size)
+            var cfName: CFString? = nil
+            AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName)
+            return (cfName as String?) ?? "Unknown Device"
         }
     }
 }
