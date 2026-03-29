@@ -284,12 +284,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
     }
 
-    /// Returns 0 for "front"/"folder" (highest priority), 1 for names starting
-    /// with those words, 2 for everything else. Used to sort artwork images.
+    /// Returns 0 for exact "front"/"folder", 1 for names containing those words,
+    /// 2 for everything else. Case-insensitive via lowercased name.
     private static func artworkPriority(_ url: URL) -> Int {
         let name = url.deletingPathExtension().lastPathComponent.lowercased()
         if name == "front" || name == "folder" { return 0 }
-        if name.hasPrefix("front") || name.hasPrefix("folder") { return 1 }
+        if name.contains("front") || name.contains("folder") { return 1 }
         return 2
     }
 
@@ -322,12 +322,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
 
                 if isDir.boolValue {
-                    // Directory: add all audio files it contains.
-                    for fileURL in self.audioFilesInDirectory(url) {
-                        let key = fileURL.standardizedFileURL
-                        guard !seen.contains(key) else { continue }
-                        seen.insert(key)
-                        newTracks.append(PlaylistTrack(url: fileURL))
+                    // Directory: if it contains CUE sheets, expand them into tracks.
+                    // Audio files already covered by a CUE sheet are skipped so the
+                    // large FLAC isn't also added as a plain whole-file entry.
+                    for track in self.tracksInDirectory(url) {
+                        let key = track.url.standardizedFileURL
+                        if track.isCUETrack {
+                            newTracks.append(track)   // CUE tracks: always include
+                        } else if !seen.contains(key) {
+                            seen.insert(key)
+                            newTracks.append(track)
+                        }
                     }
                 } else if ext == "cue" {
                     // CUE sheet: expand to individual tracks.
@@ -475,6 +480,37 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     // MARK: - Directory scanner
+
+    /// Returns tracks for a directory, preferring CUE-sheet expansion over raw audio files.
+    /// Audio files referenced by a CUE sheet are not added as plain whole-file entries.
+    private func tracksInDirectory(_ directory: URL) -> [PlaylistTrack] {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        // Find CUE sheets at the top level of the directory.
+        let cueFiles = contents.filter { $0.pathExtension.lowercased() == "cue" }
+
+        var cueTracks: [PlaylistTrack] = []
+        var coveredAudioURLs = Set<URL>()   // audio files claimed by a CUE sheet
+
+        for cue in cueFiles {
+            let parsed = parseCUESheet(at: cue)
+            cueTracks.append(contentsOf: parsed)
+            if let first = parsed.first { coveredAudioURLs.insert(first.url.standardizedFileURL) }
+        }
+
+        // Collect audio files not already covered by a CUE sheet, recursing into subdirs.
+        let plainTracks = audioFilesInDirectory(directory)
+            .filter { !coveredAudioURLs.contains($0.standardizedFileURL) }
+            .map { PlaylistTrack(url: $0) }
+
+        // CUE tracks first (in sheet order), then remaining plain files sorted by path.
+        return cueTracks + plainTracks
+    }
 
     /// Recursively find all audio files in a directory
     private func audioFilesInDirectory(_ directory: URL) -> [URL] {
