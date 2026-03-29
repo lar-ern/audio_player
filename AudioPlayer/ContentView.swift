@@ -1,5 +1,5 @@
 import SwiftUI
-import AVKit
+import CoreAudio
 
 // ContentView is intentionally a zero-logic shell. Its body calls no SwiftUI API —
 // just a plain struct init — so SwiftUI+19950082 (_assertionFailure in SwiftUI 4.6.3
@@ -255,7 +255,7 @@ struct PlayerControlsView: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                AirPlayPickerView()
+                AudioOutputPickerView()
                     .frame(width: 32, height: 32)
                     .background(Color.black.opacity(0.5))
                     .clipShape(Circle())
@@ -471,17 +471,101 @@ struct VolumePopoverView: View {
     }
 }
 
-struct AirPlayPickerView: NSViewRepresentable {
-    func makeNSView(context: Context) -> AVRoutePickerView {
-        let picker = AVRoutePickerView()
-        picker.isRoutePickerButtonBordered = false
-        if let button = picker.subviews.first(where: { $0 is NSButton }) as? NSButton {
-            button.contentTintColor = NSColor(white: 0.85, alpha: 1.0)
-        }
-        return picker
+/// Output-device picker backed by CoreAudio.
+/// Lists every device that has output streams and changes the system default
+/// when the user picks one — the same property macOS System Settings controls.
+/// AVAudioEngine follows the system default automatically, so this stays in sync.
+struct AudioOutputPickerView: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton()
+        button.bezelStyle = .regularSquare
+        button.isBordered = false
+        button.imageScaling = .scaleProportionallyUpOrDown
+        button.image = NSImage(systemSymbolName: "airplayaudio",
+                               accessibilityDescription: "Audio Output")
+        button.contentTintColor = NSColor(white: 0.85, alpha: 1.0)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.showMenu(_:))
+        return button
     }
 
-    func updateNSView(_ nsView: AVRoutePickerView, context: Context) {}
+    func updateNSView(_ nsView: NSButton, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    class Coordinator: NSObject {
+        @objc func showMenu(_ sender: NSButton) {
+            let menu = NSMenu()
+            let currentID = systemDefaultOutputDeviceID()
+            for (id, name) in outputDevices() {
+                let item = NSMenuItem(title: name,
+                                      action: #selector(selectDevice(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = NSNumber(value: id)
+                item.state = (id == currentID) ? .on : .off
+                menu.addItem(item)
+            }
+            let origin = NSPoint(x: 0, y: sender.bounds.height + 4)
+            menu.popUp(positioning: nil, at: origin, in: sender)
+        }
+
+        @objc func selectDevice(_ item: NSMenuItem) {
+            guard let n = item.representedObject as? NSNumber else { return }
+            var id = AudioDeviceID(n.uint32Value)
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                       &addr, 0, nil,
+                                       UInt32(MemoryLayout<AudioDeviceID>.size), &id)
+        }
+
+        private func systemDefaultOutputDeviceID() -> AudioDeviceID {
+            var id = AudioDeviceID(kAudioObjectUnknown)
+            var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                       &addr, 0, nil, &size, &id)
+            return id
+        }
+
+        private func outputDevices() -> [(AudioDeviceID, String)] {
+            let sys = AudioObjectID(kAudioObjectSystemObject)
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDevices,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var size: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(sys, &addr, 0, nil, &size) == noErr else { return [] }
+            let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+            var ids = [AudioDeviceID](repeating: AudioDeviceID(kAudioObjectUnknown), count: count)
+            AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &ids)
+
+            return ids.compactMap { id -> (AudioDeviceID, String)? in
+                var outAddr = AudioObjectPropertyAddress(
+                    mSelector: kAudioDevicePropertyStreams,
+                    mScope: kAudioObjectPropertyScopeOutput,
+                    mElement: kAudioObjectPropertyElementMain)
+                var outSize: UInt32 = 0
+                guard AudioObjectGetPropertyDataSize(id, &outAddr, 0, nil, &outSize) == noErr,
+                      outSize > 0 else { return nil }
+
+                var nameAddr = AudioObjectPropertyAddress(
+                    mSelector: kAudioObjectPropertyName,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain)
+                var nameSize = UInt32(MemoryLayout<CFString?>.size)
+                var cfName: CFString? = nil
+                AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName)
+                return (id, (cfName as String?) ?? "Unknown Device")
+            }
+        }
+    }
 }
 
 struct EQPopoverView: View {
