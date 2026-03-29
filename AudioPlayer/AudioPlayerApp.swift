@@ -72,7 +72,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !audioURLs.isEmpty else { return }
 
         let wasEmpty = audioPlayer.playlist.isEmpty
-        audioPlayer.playlist.append(contentsOf: audioURLs)
+        audioPlayer.playlist.append(contentsOf: audioURLs.map { PlaylistTrack(url: $0) })
 
         if wasEmpty {
             audioPlayer.selectTrack(at: 0)
