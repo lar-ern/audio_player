@@ -9,6 +9,30 @@ struct TrackMetadata {
     let album: String
 }
 
+/// A single playable entry in the playlist.
+/// Normal files have startTime = 0 and endTime = nil.
+/// CUE-sheet tracks carry the time range within a shared audio file.
+struct PlaylistTrack {
+    let url: URL
+    let startTime: TimeInterval    // 0 for whole-file tracks
+    let endTime: TimeInterval?     // nil = play to end of file
+    let knownDuration: TimeInterval? // pre-computed for non-last CUE tracks
+    let cueTitle: String?
+    let cueArtist: String?
+
+    init(url: URL, startTime: TimeInterval = 0, endTime: TimeInterval? = nil,
+         knownDuration: TimeInterval? = nil, cueTitle: String? = nil, cueArtist: String? = nil) {
+        self.url = url
+        self.startTime = startTime
+        self.endTime = endTime
+        self.knownDuration = knownDuration
+        self.cueTitle = cueTitle
+        self.cueArtist = cueArtist
+    }
+
+    var isCUETrack: Bool { startTime > 0 || endTime != nil }
+}
+
 class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
@@ -35,7 +59,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         currentArtworkIndex = (currentArtworkIndex + 1) % artworkImages.count
     }
 
-    @Published var playlist: [URL] = []
+    @Published var playlist: [PlaylistTrack] = []
     @Published var currentTrackIndex: Int = 0
 
     // UI state — stored here so views can access via @EnvironmentObject without
@@ -79,6 +103,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var metadataCache: [URL: TrackMetadata] = [:]
     private var durationCache: [URL: TimeInterval] = [:]
 
+    // Cache the fully-decoded buffer for CUE/single-file albums so consecutive
+    // tracks from the same file don't re-read from disk.
+    private var wholeFileCache: (url: URL, file: AVAudioFile, buffer: AVAudioPCMBuffer)?
+
     // Incremented on every loadTrack call so background loads from a
     // previous request are discarded when the user switches tracks quickly.
     private var loadGeneration = 0
@@ -103,7 +131,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
             self.stopTimer()
             self.currentTime = self.duration
 
-            // Gap before next track (next track is already pre-buffered)
             guard self.playlist.count > 1 || self.currentTrackIndex < self.playlist.count - 1 else { return }
             let nextIndex = (self.currentTrackIndex + 1) % self.playlist.count
             if self.gapDuration <= 0 {
@@ -220,7 +247,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
             ) else { return }
 
             let sorted = contents.sorted {
-                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+                let pa = Self.artworkPriority($0), pb = Self.artworkPriority($1)
+                if pa != pb { return pa < pb }
+                return $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
             }
 
             for item in sorted {
@@ -231,7 +260,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
                         at: item, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
                     ) {
                         for subItem in sub.sorted(by: {
-                            $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+                            let pa = Self.artworkPriority($0), pb = Self.artworkPriority($1)
+                            if pa != pb { return pa < pb }
+                            return $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
                         }) {
                             if Self.imageExtensions.contains(subItem.pathExtension.lowercased()),
                                let img = NSImage(contentsOf: subItem) {
@@ -253,6 +284,15 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
     }
 
+    /// Returns 0 for "front"/"folder" (highest priority), 1 for names starting
+    /// with those words, 2 for everything else. Used to sort artwork images.
+    private static func artworkPriority(_ url: URL) -> Int {
+        let name = url.deletingPathExtension().lastPathComponent.lowercased()
+        if name == "front" || name == "folder" { return 0 }
+        if name.hasPrefix("front") || name.hasPrefix("folder") { return 1 }
+        return 2
+    }
+
     private static let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "alac", "caf", "ogg", "wma"
     ]
@@ -265,51 +305,176 @@ class AudioPlayerManager: NSObject, ObservableObject {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-
-        // Include FLAC files along with other audio formats
         panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio, .folder]
         panel.allowsOtherFileTypes = true
 
         panel.begin { [weak self] response in
-            if response == .OK {
-                guard let self = self else { return }
-                var audioURLs: [URL] = []
+            guard response == .OK, let self = self else { return }
 
-                for url in panel.urls {
-                    var isDir: ObjCBool = false
-                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                        audioURLs.append(contentsOf: self.audioFilesInDirectory(url))
-                    } else if Self.audioExtensions.contains(url.pathExtension.lowercased()) {
-                        audioURLs.append(url)
+            // Existing URLs in the playlist for de-duplication.
+            var seen = Set(self.playlist.map { $0.url.standardizedFileURL })
+
+            var newTracks: [PlaylistTrack] = []
+
+            for url in panel.urls {
+                let ext = url.pathExtension.lowercased()
+                var isDir: ObjCBool = false
+                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+
+                if isDir.boolValue {
+                    // Directory: add all audio files it contains.
+                    for fileURL in self.audioFilesInDirectory(url) {
+                        let key = fileURL.standardizedFileURL
+                        guard !seen.contains(key) else { continue }
+                        seen.insert(key)
+                        newTracks.append(PlaylistTrack(url: fileURL))
                     }
-                }
-
-                // Sort by path for natural album/track ordering
-                audioURLs.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-
-                guard !audioURLs.isEmpty else { return }
-
-                let wasEmpty = self.playlist.isEmpty
-                self.playlist.append(contentsOf: audioURLs)
-
-                // Pre-warm duration cache in the background so the playlist
-                // shows track lengths without any main-thread stalls.
-                for url in audioURLs {
-                    guard self.durationCache[url] == nil else { continue }
-                    DispatchQueue.global(qos: .utility).async { [weak self] in
-                        guard let file = try? AVAudioFile(forReading: url) else { return }
-                        let d = Double(file.length) / file.processingFormat.sampleRate
-                        DispatchQueue.main.async { self?.durationCache[url] = d }
+                } else if ext == "cue" {
+                    // CUE sheet: expand to individual tracks.
+                    for track in self.parseCUESheet(at: url) {
+                        let key = track.url.standardizedFileURL
+                        // CUE tracks from the same file are distinct — don't dedupe by URL alone.
+                        // But skip if an identical non-CUE entry for the same file exists.
+                        if !track.isCUETrack, seen.contains(key) { continue }
+                        if !track.isCUETrack { seen.insert(key) }
+                        newTracks.append(track)
                     }
+                } else if ext == "m3u" || ext == "m3u8" {
+                    // M3U playlist: expand to audio file URLs.
+                    for fileURL in self.parseM3U(at: url) {
+                        let key = fileURL.standardizedFileURL
+                        guard !seen.contains(key) else { continue }
+                        seen.insert(key)
+                        newTracks.append(PlaylistTrack(url: fileURL))
+                    }
+                } else if Self.audioExtensions.contains(ext) {
+                    let key = url.standardizedFileURL
+                    guard !seen.contains(key) else { continue }
+                    seen.insert(key)
+                    newTracks.append(PlaylistTrack(url: url))
                 }
+            }
 
-                if wasEmpty {
-                    self.currentTrackIndex = 0
-                    self.loadTrack(at: 0)
+            // Sort whole-file tracks by path; CUE tracks keep their sheet order.
+            let sortedTracks = newTracks.sorted {
+                // CUE tracks that share a file stay in parsed order relative to each other.
+                if $0.isCUETrack && $1.isCUETrack && $0.url == $1.url {
+                    return $0.startTime < $1.startTime
                 }
+                return $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
+            }
+
+            guard !sortedTracks.isEmpty else { return }
+
+            let wasEmpty = self.playlist.isEmpty
+            self.playlist.append(contentsOf: sortedTracks)
+
+            // Pre-warm duration cache for whole-file tracks.
+            for track in sortedTracks where !track.isCUETrack {
+                let url = track.url
+                guard self.durationCache[url] == nil else { continue }
+                DispatchQueue.global(qos: .utility).async { [weak self] in
+                    guard let file = try? AVAudioFile(forReading: url) else { return }
+                    let d = Double(file.length) / file.processingFormat.sampleRate
+                    DispatchQueue.main.async { self?.durationCache[url] = d }
+                }
+            }
+
+            if wasEmpty {
+                self.currentTrackIndex = 0
+                self.loadTrack(at: 0)
             }
         }
     }
+
+    // MARK: - CUE sheet parser
+
+    private func parseCUESheet(at cueURL: URL) -> [PlaylistTrack] {
+        guard let raw = (try? String(contentsOf: cueURL, encoding: .utf8))
+                     ?? (try? String(contentsOf: cueURL, encoding: .isoLatin1)) else { return [] }
+
+        let dir = cueURL.deletingLastPathComponent()
+        var audioFileURL: URL?
+        var globalArtist: String?
+
+        struct RawTrack {
+            var title: String?
+            var artist: String?
+            var startTime: TimeInterval = 0
+        }
+        var tracks: [RawTrack] = []
+        var current = RawTrack()
+        var inTrack = false
+
+        for line in raw.components(separatedBy: .newlines) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            let up = t.uppercased()
+
+            if up.hasPrefix("FILE ") {
+                let parts = t.components(separatedBy: "\"")
+                if parts.count >= 2 {
+                    audioFileURL = dir.appendingPathComponent(parts[1])
+                }
+            } else if up.hasPrefix("TRACK ") && up.contains("AUDIO") {
+                if inTrack { tracks.append(current) }
+                current = RawTrack()
+                inTrack = true
+            } else if up.hasPrefix("TITLE ") {
+                let v = t.dropFirst(6).trimmingCharacters(in: CharacterSet(charactersIn: "\" \t"))
+                if inTrack { current.title = v } // else ignore disc title
+            } else if up.hasPrefix("PERFORMER ") {
+                let v = t.dropFirst(10).trimmingCharacters(in: CharacterSet(charactersIn: "\" \t"))
+                if inTrack { current.artist = v } else { globalArtist = v }
+            } else if up.hasPrefix("INDEX 01 ") {
+                current.startTime = parseCUETimestamp(String(t.dropFirst(9)))
+            }
+        }
+        if inTrack { tracks.append(current) }
+
+        guard let audioURL = audioFileURL, !tracks.isEmpty else { return [] }
+
+        return tracks.enumerated().map { i, raw in
+            let endTime: TimeInterval? = i + 1 < tracks.count ? tracks[i + 1].startTime : nil
+            return PlaylistTrack(
+                url: audioURL,
+                startTime: raw.startTime,
+                endTime: endTime,
+                knownDuration: endTime.map { $0 - raw.startTime },
+                cueTitle: raw.title,
+                cueArtist: raw.artist ?? globalArtist
+            )
+        }
+    }
+
+    /// Parse a CUE timestamp of the form MM:SS:FF (75 frames/sec).
+    private func parseCUETimestamp(_ s: String) -> TimeInterval {
+        let parts = s.components(separatedBy: ":").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 3 else { return 0 }
+        return TimeInterval(parts[0] * 60 + parts[1]) + TimeInterval(parts[2]) / 75.0
+    }
+
+    // MARK: - M3U parser
+
+    private func parseM3U(at url: URL) -> [URL] {
+        guard let raw = (try? String(contentsOf: url, encoding: .utf8))
+                     ?? (try? String(contentsOf: url, encoding: .isoLatin1)) else { return [] }
+        let dir = url.deletingLastPathComponent()
+        return raw.components(separatedBy: .newlines).compactMap { line -> URL? in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, !t.hasPrefix("#") else { return nil }
+            let fileURL: URL
+            if t.hasPrefix("file://") {
+                fileURL = URL(string: t) ?? URL(fileURLWithPath: t)
+            } else if t.hasPrefix("/") || t.hasPrefix("~") {
+                fileURL = URL(fileURLWithPath: t)
+            } else {
+                fileURL = dir.appendingPathComponent(t)
+            }
+            return Self.audioExtensions.contains(fileURL.pathExtension.lowercased()) ? fileURL : nil
+        }
+    }
+
+    // MARK: - Directory scanner
 
     /// Recursively find all audio files in a directory
     private func audioFilesInDirectory(_ directory: URL) -> [URL] {
@@ -334,11 +499,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private func loadTrack(at index: Int, autoPlay: Bool = false) {
         guard index >= 0 && index < playlist.count else { return }
 
-        let url = playlist[index]
+        let track = playlist[index]
+        let url = track.url
         currentTrackIndex = index
 
-        // Stamp this load so any in-flight background load for a previous
-        // track can detect it has been superseded and bail out.
         loadGeneration += 1
         let generation = loadGeneration
 
@@ -350,9 +514,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         isPlaying = false
         isTrackLoaded = false
 
-        // Update UI immediately with what we know; metadata arrives async.
-        currentTrackName = url.deletingPathExtension().lastPathComponent
-        currentArtist = "Unknown Artist"
+        // Immediate UI update — CUE titles override file-based metadata.
+        currentTrackName = track.cueTitle ?? url.deletingPathExtension().lastPathComponent
+        currentArtist = track.cueArtist ?? "Unknown Artist"
         currentAlbum = "Unknown Album"
         copyright = ""
         sampleRate = ""
@@ -360,35 +524,55 @@ class AudioPlayerManager: NSObject, ObservableObject {
         artworkImages = []
         currentArtworkIndex = 0
 
-        extractMetadata(from: url, generation: generation)
+        // Only read file-level metadata when not supplied by the CUE sheet.
+        if !track.isCUETrack {
+            extractMetadata(from: url, generation: generation)
+        }
         scanDirectoryArtworks(for: url, generation: generation)
 
-        // Buffer the file on a background queue — this is the expensive step
-        // (decoding the entire audio file into PCM) and must not block the UI.
         loadQueue.async { [weak self] in
             guard let self = self, self.loadGeneration == generation else { return }
 
             do {
-                // Fast path: use the preloaded buffer if it matches this URL.
-                // Slow path: open and decode the file from scratch.
                 var file: AVAudioFile
                 var buffer: AVAudioPCMBuffer
 
-                var preFile: AVAudioFile?
-                var preBuf: AVAudioPCMBuffer?
-                var preURL: URL?
-                self.audioEngine.preloadQueue.sync {
-                    preFile = self.audioEngine.preloadedFile
-                    preBuf  = self.audioEngine.preloadedBuffer
-                    preURL  = self.audioEngine.preloadedURL
-                }
-
-                if preURL == url, let pf = preFile, let pb = preBuf {
-                    file   = pf
-                    buffer = pb
+                if track.isCUETrack {
+                    // Reuse the whole-file cache when consecutive CUE tracks share
+                    // the same audio file, avoiding a re-read from disk.
+                    if self.wholeFileCache?.url != url {
+                        let fullFile = try AVAudioFile(forReading: url)
+                        let fullBuf  = try self.audioEngine.bufferFile(fullFile)
+                        self.wholeFileCache = (url, fullFile, fullBuf)
+                    }
+                    let cache = self.wholeFileCache!
+                    file = cache.file
+                    guard let trackBuf = self.extractTrackBuffer(
+                            from: cache.buffer,
+                            format: cache.file.processingFormat,
+                            startTime: track.startTime,
+                            endTime: track.endTime) else {
+                        throw AudioEngineError.decodingFailed
+                    }
+                    buffer = trackBuf
                 } else {
-                    file   = try AVAudioFile(forReading: url)
-                    buffer = try self.audioEngine.bufferFile(file)
+                    // Normal track: prefer preloaded buffer, otherwise read fresh.
+                    self.wholeFileCache = nil
+                    var preFile: AVAudioFile?
+                    var preBuf: AVAudioPCMBuffer?
+                    var preURL: URL?
+                    self.audioEngine.preloadQueue.sync {
+                        preFile = self.audioEngine.preloadedFile
+                        preBuf  = self.audioEngine.preloadedBuffer
+                        preURL  = self.audioEngine.preloadedURL
+                    }
+                    if preURL == url, let pf = preFile, let pb = preBuf {
+                        file   = pf
+                        buffer = pb
+                    } else {
+                        file   = try AVAudioFile(forReading: url)
+                        buffer = try self.audioEngine.bufferFile(file)
+                    }
                 }
 
                 guard self.loadGeneration == generation else { return }
@@ -403,7 +587,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
                         let d = self.audioEngine.duration
                         self.duration = d
-                        self.durationCache[url] = d
+                        // Only cache duration by URL for whole-file tracks.
+                        if !track.isCUETrack { self.durationCache[url] = d }
                         self.currentTime = 0
                         self.playbackStartPosition = 0
                         self.isTrackLoaded = true
@@ -434,16 +619,62 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
     }
 
+    /// Slice a sub-buffer for one CUE track from the whole-file buffer.
+    private func extractTrackBuffer(from fullBuffer: AVAudioPCMBuffer,
+                                     format: AVAudioFormat,
+                                     startTime: TimeInterval,
+                                     endTime: TimeInterval?) -> AVAudioPCMBuffer? {
+        let rate = format.sampleRate
+        let startFrame = Int(startTime * rate)
+        let totalFrames = Int(fullBuffer.frameLength)
+        let endFrame = endTime.map { min(Int($0 * rate), totalFrames) } ?? totalFrames
+        let frameCount = endFrame - startFrame
+        guard frameCount > 0, startFrame < totalFrames else { return nil }
+
+        guard let out = AVAudioPCMBuffer(pcmFormat: format,
+                                         frameCapacity: AVAudioFrameCount(frameCount)) else { return nil }
+        for ch in 0..<Int(format.channelCount) {
+            if let src = fullBuffer.floatChannelData?[ch],
+               let dst = out.floatChannelData?[ch] {
+                dst.update(from: src.advanced(by: startFrame), count: frameCount)
+            }
+        }
+        out.frameLength = AVAudioFrameCount(frameCount)
+        return out
+    }
+
     private func preloadNextTrack(after index: Int) {
         guard playlist.count > 1 else { return }
         let nextIndex = (index + 1) % playlist.count
-        let nextURL = playlist[nextIndex]
-        audioEngine.preloadFile(url: nextURL)
+        let next = playlist[nextIndex]
+        // CUE tracks from the same file will use wholeFileCache — no disk read needed.
+        guard !next.isCUETrack || next.url != playlist[index].url else { return }
+        audioEngine.preloadFile(url: next.url)
     }
 
     /// Always starts playback regardless of current play/pause state.
     func startTrack(at index: Int) {
         loadTrack(at: index, autoPlay: true)
+    }
+
+    /// Duration for a playlist entry, using the CUE-derived value when available.
+    func getTrackDuration(at index: Int) -> TimeInterval {
+        let track = playlist[index]
+        if let d = track.knownDuration { return d }
+        // For the last CUE track (endTime == nil) or normal tracks, use file-level cache.
+        let fileDuration = getTrackDuration(for: track.url)
+        if track.isCUETrack && fileDuration > 0 { return fileDuration - track.startTime }
+        return fileDuration
+    }
+
+    /// Metadata for a playlist entry, with CUE title/artist taking priority.
+    func getTrackMetadata(for track: PlaylistTrack) -> TrackMetadata {
+        if let title = track.cueTitle {
+            // For CUE tracks, album comes from the file-level metadata cache if available.
+            let album = metadataCache[track.url]?.album ?? ""
+            return TrackMetadata(title: title, artist: track.cueArtist ?? "", album: album)
+        }
+        return getTrackMetadata(for: track.url)
     }
 
     private func stopCurrentTrack() {
@@ -519,6 +750,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     func clearPlaylist() {
         stopCurrentTrack()
         playlist.removeAll()
+        wholeFileCache = nil
         metadataCache.removeAll()
         durationCache.removeAll()
         artworkImages = []
