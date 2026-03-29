@@ -251,10 +251,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     if bits > 0 { depthText = "\(bits)-bit" }
                 }
             }
+            let rate = rateText
+            let depth = depthText
             await MainActor.run {
                 guard self.loadGeneration == generation else { return }
-                self.sampleRate = rateText
-                self.bitDepth = depthText
+                self.sampleRate = rate
+                self.bitDepth = depth
             }
         }
     }
