@@ -77,17 +77,17 @@ struct PlaylistView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
     @State private var isPlaylistExpanded = true
 
-    private var filteredPlaylist: [(index: Int, url: URL)] {
+    private var filteredPlaylist: [(index: Int, track: PlaylistTrack)] {
         if audioPlayer.searchText.isEmpty {
-            return audioPlayer.playlist.enumerated().map { (index: $0.offset, url: $0.element) }
+            return audioPlayer.playlist.enumerated().map { (index: $0.offset, track: $0.element) }
         }
         let query = audioPlayer.searchText.lowercased()
-        return audioPlayer.playlist.enumerated().compactMap { offset, url in
-            let meta = audioPlayer.getTrackMetadata(for: url)
+        return audioPlayer.playlist.enumerated().compactMap { offset, track in
+            let meta = audioPlayer.getTrackMetadata(for: track)
             if meta.title.lowercased().contains(query) ||
                meta.artist.lowercased().contains(query) ||
                meta.album.lowercased().contains(query) {
-                return (index: offset, url: url)
+                return (index: offset, track: track)
             }
             return nil
         }
@@ -185,7 +185,7 @@ struct PlaylistView: View {
                             let prevIndex = filteredPlaylist.first(where: { $0.index == item.index - 1 })?.index
                             let prevMeta = prevIndex.map { audioPlayer.getTrackMetadata(for: audioPlayer.playlist[$0]) }
                             PlaylistItemView(
-                                url: item.url,
+                                track: item.track,
                                 index: item.index,
                                 isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
                                 previousMetadata: prevMeta,
@@ -722,7 +722,7 @@ struct SettingsPopoverView: View {
 }
 
 struct PlaylistItemView: View {
-    let url: URL
+    let track: PlaylistTrack
     let index: Int
     let isCurrentTrack: Bool
     let previousMetadata: TrackMetadata?
@@ -731,8 +731,8 @@ struct PlaylistItemView: View {
     let audioPlayer: AudioPlayerManager
 
     var body: some View {
-        let metadata = audioPlayer.getTrackMetadata(for: url)
-        let duration = audioPlayer.getTrackDuration(for: url)
+        let metadata = audioPlayer.getTrackMetadata(for: track)
+        let duration = audioPlayer.getTrackDuration(at: index)
         let showFullInfo = previousMetadata == nil ||
                            previousMetadata?.artist != metadata.artist ||
                            previousMetadata?.album != metadata.album
