@@ -48,7 +48,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     // @Binding, avoiding the SwiftUI 4.6.3 assertion on macOS 13.7 that fires
     // when a view with @Binding properties has _ConditionalContent in its body.
     @Published var searchText: String = ""
-    @Published var isWideLayout: Bool = false
+    @Published var isWideLayout: Bool = true
 
     // EQ properties with UserDefaults persistence
     @Published var eqEnabled: Bool {
@@ -189,11 +189,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
                 let finalSampleRate = sampleRateText
                 let finalBitDepth = bitDepthText
+                let dirFallback = Self.directoryFallback(for: url)
                 await MainActor.run {
                     guard self.loadGeneration == generation else { return }
                     self.currentTrackName = (title != nil && !title!.isEmpty) ? title! : fallbackName
-                    self.currentArtist = (artist != nil && !artist!.isEmpty) ? artist! : "Unknown Artist"
-                    self.currentAlbum = (album != nil && !album!.isEmpty) ? album! : "Unknown Album"
+                    self.currentArtist = (artist != nil && !artist!.isEmpty) ? artist! : dirFallback.artist
+                    self.currentAlbum = (album != nil && !album!.isEmpty) ? album! : dirFallback.album
                     self.copyright = copyrightText ?? ""
                     self.sampleRate = finalSampleRate
                     self.bitDepth = finalBitDepth
@@ -272,6 +273,14 @@ class AudioPlayerManager: NSObject, ObservableObject {
         return 2
     }
 
+    /// Falls back to directory names when a file has no embedded artist/album tags.
+    /// Assumes common layout: …/Artist/Album/track.flac
+    private static func directoryFallback(for url: URL) -> (artist: String, album: String) {
+        let parent = url.deletingLastPathComponent()
+        return (artist: parent.deletingLastPathComponent().lastPathComponent,
+                album: parent.lastPathComponent)
+    }
+
     private static let audioExtensions: Set<String> = [
         "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "alac", "caf", "ogg", "wma"
     ]
@@ -284,10 +293,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio, .folder]
-        panel.allowsOtherFileTypes = true
+        // Do NOT include UTType.folder here — folder selection is handled by
+        // canChooseDirectories = true. Mixing folder and file UTTypes in
+        // allowedContentTypes silently prevents the panel from opening on macOS 26.
+        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio]
+        panel.allowsOtherFileTypes = true   // lets M3U / FLAC / etc. through
 
-        panel.begin { [weak self] response in
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let self = self else { return }
 
             var seen = Set(self.playlist.map { $0.url.standardizedFileURL })
@@ -343,6 +355,14 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 self.currentTrackIndex = 0
                 self.loadTrack(at: 0)
             }
+        }
+
+        // Present as a sheet on the key window (preferred on macOS 14+/26).
+        // Fall back to runModal() if there is no window yet.
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            handler(panel.runModal())
         }
     }
 
@@ -609,10 +629,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
             return cached
         }
 
+        let dirFallback = Self.directoryFallback(for: url)
         let result = TrackMetadata(
             title: url.deletingPathExtension().lastPathComponent,
-            artist: "Unknown Artist",
-            album: "Unknown Album"
+            artist: dirFallback.artist,
+            album: dirFallback.album
         )
         metadataCache[url] = result
 
@@ -631,8 +652,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
             let loaded = TrackMetadata(
                 title: (title != nil && !title!.isEmpty) ? title! : url.deletingPathExtension().lastPathComponent,
-                artist: (artist != nil && !artist!.isEmpty) ? artist! : "Unknown Artist",
-                album: (album != nil && !album!.isEmpty) ? album! : "Unknown Album"
+                artist: (artist != nil && !artist!.isEmpty) ? artist! : dirFallback.artist,
+                album: (album != nil && !album!.isEmpty) ? album! : dirFallback.album
             )
 
             await MainActor.run {
