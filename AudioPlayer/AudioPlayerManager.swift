@@ -19,15 +19,18 @@ struct PlaylistTrack {
     let knownDuration: TimeInterval? // pre-computed for non-last CUE tracks
     let cueTitle: String?
     let cueArtist: String?
+    let cueAlbum: String?          // CUE global TITLE
 
     init(url: URL, startTime: TimeInterval = 0, endTime: TimeInterval? = nil,
-         knownDuration: TimeInterval? = nil, cueTitle: String? = nil, cueArtist: String? = nil) {
+         knownDuration: TimeInterval? = nil, cueTitle: String? = nil,
+         cueArtist: String? = nil, cueAlbum: String? = nil) {
         self.url = url
         self.startTime = startTime
         self.endTime = endTime
         self.knownDuration = knownDuration
         self.cueTitle = cueTitle
         self.cueArtist = cueArtist
+        self.cueAlbum = cueAlbum
     }
 
     var isCUETrack: Bool { startTime > 0 || endTime != nil }
@@ -231,6 +234,31 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
     }
 
+    /// Reads only sample rate and bit depth from an audio file.
+    /// Used for CUE tracks where title/artist/album come from the sheet, not tags.
+    private func extractTechnicalMetadata(from url: URL, generation: Int) {
+        let asset = AVURLAsset(url: url)
+        Task {
+            guard let audioTracks = try? await asset.loadTracks(withMediaType: .audio),
+                  let audioTrack = audioTracks.first else { return }
+            guard let descs = try? await audioTrack.load(.formatDescriptions) else { return }
+            var rateText = ""
+            var depthText = ""
+            for desc in descs {
+                if let basic = CMAudioFormatDescriptionGetStreamBasicDescription(desc) {
+                    rateText = String(format: "%.1f kHz", basic.pointee.mSampleRate / 1000.0)
+                    let bits = basic.pointee.mBitsPerChannel
+                    if bits > 0 { depthText = "\(bits)-bit" }
+                }
+            }
+            await MainActor.run {
+                guard self.loadGeneration == generation else { return }
+                self.sampleRate = rateText
+                self.bitDepth = depthText
+            }
+        }
+    }
+
     /// Scans the track's directory and one level of subdirectories for image
     /// files and appends them to artworkImages after any embedded artwork.
     private func scanDirectoryArtworks(for url: URL, generation: Int) {
@@ -401,6 +429,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         let dir = cueURL.deletingLastPathComponent()
         var audioFileURL: URL?
         var globalArtist: String?
+        var globalAlbum: String?
 
         struct RawTrack {
             var title: String?
@@ -425,10 +454,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 current = RawTrack()
                 inTrack = true
             } else if up.hasPrefix("TITLE ") {
-                let v = t.dropFirst(6).trimmingCharacters(in: CharacterSet(charactersIn: "\" \t"))
-                if inTrack { current.title = v } // else ignore disc title
+                let v = String(t.dropFirst(6).trimmingCharacters(in: CharacterSet(charactersIn: "\" \t")))
+                if inTrack { current.title = v } else { globalAlbum = v }
             } else if up.hasPrefix("PERFORMER ") {
-                let v = t.dropFirst(10).trimmingCharacters(in: CharacterSet(charactersIn: "\" \t"))
+                let v = String(t.dropFirst(10).trimmingCharacters(in: CharacterSet(charactersIn: "\" \t")))
                 if inTrack { current.artist = v } else { globalArtist = v }
             } else if up.hasPrefix("INDEX 01 ") {
                 current.startTime = parseCUETimestamp(String(t.dropFirst(9)))
@@ -446,7 +475,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 endTime: endTime,
                 knownDuration: endTime.map { $0 - raw.startTime },
                 cueTitle: raw.title,
-                cueArtist: raw.artist ?? globalArtist
+                cueArtist: raw.artist ?? globalArtist,
+                cueAlbum: globalAlbum
             )
         }
     }
@@ -550,18 +580,20 @@ class AudioPlayerManager: NSObject, ObservableObject {
         isPlaying = false
         isTrackLoaded = false
 
-        // Immediate UI update — CUE titles override file-based metadata.
+        // Immediate UI update — CUE values take priority over file tags.
         currentTrackName = track.cueTitle ?? url.deletingPathExtension().lastPathComponent
         currentArtist = track.cueArtist ?? "Unknown Artist"
-        currentAlbum = "Unknown Album"
+        currentAlbum = track.cueAlbum ?? "Unknown Album"
         copyright = ""
         sampleRate = ""
         bitDepth = ""
         artworkImages = []
         currentArtworkIndex = 0
 
-        // Only read file-level metadata when not supplied by the CUE sheet.
-        if !track.isCUETrack {
+        if track.isCUETrack {
+            // For CUE tracks, skip tag reading but still get sample rate / bit depth.
+            extractTechnicalMetadata(from: url, generation: generation)
+        } else {
             extractMetadata(from: url, generation: generation)
         }
         scanDirectoryArtworks(for: url, generation: generation)
@@ -706,9 +738,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// Metadata for a playlist entry, with CUE title/artist taking priority.
     func getTrackMetadata(for track: PlaylistTrack) -> TrackMetadata {
         if let title = track.cueTitle {
-            // For CUE tracks, album comes from the file-level metadata cache if available.
-            let album = metadataCache[track.url]?.album ?? ""
-            return TrackMetadata(title: title, artist: track.cueArtist ?? "", album: album)
+            return TrackMetadata(
+                title: title,
+                artist: track.cueArtist ?? "",
+                album: track.cueAlbum ?? ""
+            )
         }
         return getTrackMetadata(for: track.url)
     }
