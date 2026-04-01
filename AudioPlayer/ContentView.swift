@@ -63,7 +63,7 @@ struct WideLayoutView: View {
 
             PlaylistView(sidePanel: true)
                 .padding(16)
-                .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 320, maxWidth: .infinity)
         }
         .frame(minHeight: 560)
         .fixedSize(horizontal: false, vertical: true)
@@ -197,7 +197,7 @@ struct PlaylistView: View {
                     }
                 }
             }
-            .frame(maxHeight: showList ? (sidePanel ? .infinity : 320) : 0)
+            .frame(maxHeight: showList ? 500 : 0)
             .opacity(showList ? 1 : 0)
             .background(
                 RoundedRectangle(cornerRadius: 8)
