@@ -29,6 +29,28 @@ class AudioEngine {
         setupEngine()
     }
 
+    /// Configures EQ band parameters. Shared by setupEngine and rebuildEngineAfterConfigChange.
+    private func configureEQNode(_ eq: AVAudioUnitEQ,
+                                  bassGain: Float = 0,
+                                  trebleGain: Float = 0,
+                                  bypass: Bool = true) {
+        let bassBand = eq.bands[0]
+        bassBand.filterType = .parametric
+        bassBand.frequency  = 100
+        bassBand.bandwidth  = 1.0
+        bassBand.gain       = bassGain
+        bassBand.bypass     = false
+
+        let trebleBand = eq.bands[1]
+        trebleBand.filterType = .parametric
+        trebleBand.frequency  = 10000
+        trebleBand.bandwidth  = 1.0
+        trebleBand.gain       = trebleGain
+        trebleBand.bypass     = false
+
+        eq.bypass = bypass
+    }
+
     private func setupEngine() {
         engine = AVAudioEngine()
         playerNode = AVAudioPlayerNode()
@@ -38,25 +60,7 @@ class AudioEngine {
               let player = playerNode,
               let eq = eqNode else { return }
 
-        // Configure EQ bands
-        // Band 0: Bass at 100 Hz
-        let bassBand = eq.bands[0]
-        bassBand.filterType = .parametric
-        bassBand.frequency = 100
-        bassBand.bandwidth = 1.0
-        bassBand.gain = 0
-        bassBand.bypass = false
-
-        // Band 1: Treble at 10 kHz
-        let trebleBand = eq.bands[1]
-        trebleBand.filterType = .parametric
-        trebleBand.frequency = 10000
-        trebleBand.bandwidth = 1.0
-        trebleBand.gain = 0
-        trebleBand.bypass = false
-
-        // EQ bypassed by default
-        eq.bypass = true
+        configureEQNode(eq)
 
         // Attach nodes
         engine.attach(player)
@@ -74,10 +78,54 @@ class AudioEngine {
     }
 
     @objc private func handleEngineConfigurationChange(_ notification: Notification) {
-        connectedFormat = nil
+        // On macOS 26+, after a hardware configuration change the engine's
+        // internal graph is reset. Attempting to connect nodes on that engine
+        // throws inside AVAudioEngineGraph::UpdateGraphAfterReconfig (an
+        // NSException that Swift cannot catch). Rebuild the engine and nodes
+        // on the main thread before calling onConfigurationChange, so that
+        // the subsequent prepareForPlayback() starts from a clean graph.
         DispatchQueue.main.async { [weak self] in
-            self?.onConfigurationChange?()
+            guard let self = self else { return }
+            self.rebuildEngineAfterConfigChange()
+            self.onConfigurationChange?()
         }
+    }
+
+    /// Tears down the current AVAudioEngine and creates a fresh one with the
+    /// same EQ settings. Called after a hardware configuration change.
+    private func rebuildEngineAfterConfigChange() {
+        // Capture current EQ state before we replace the nodes.
+        let bypass     = eqNode?.bypass           ?? true
+        let bassGain   = eqNode?.bands[0].gain    ?? 0
+        let trebleGain = eqNode?.bands[1].gain    ?? 0
+
+        // Remove observer from the old engine and stop it.
+        if let old = engine {
+            NotificationCenter.default.removeObserver(
+                self, name: .AVAudioEngineConfigurationChange, object: old)
+            old.stop()
+        }
+
+        // Fresh engine + fresh nodes.
+        let newEngine = AVAudioEngine()
+        let newPlayer = AVAudioPlayerNode()
+        let newEQ     = AVAudioUnitEQ(numberOfBands: 2)
+
+        configureEQNode(newEQ, bassGain: bassGain, trebleGain: trebleGain, bypass: bypass)
+
+        newEngine.attach(newPlayer)
+        newEngine.attach(newEQ)
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange(_:)),
+            name: .AVAudioEngineConfigurationChange,
+            object: newEngine)
+
+        engine        = newEngine
+        playerNode    = newPlayer
+        eqNode        = newEQ
+        connectedFormat = nil
     }
 
     func bufferFile(_ file: AVAudioFile) throws -> AVAudioPCMBuffer {
