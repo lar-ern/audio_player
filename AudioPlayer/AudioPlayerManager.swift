@@ -35,6 +35,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var artworkImages: [NSImage] = []
     @Published var currentArtworkIndex: Int = 0
     @Published var isTrackLoaded = false
+    @Published var isDownloadingCoverArt = false
+    @Published var coverArtMessage: String = ""
 
     func cycleArtwork() {
         guard artworkImages.count > 1 else { return }
@@ -513,6 +515,115 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// Always starts playback regardless of current play/pause state.
     func startTrack(at index: Int) {
         loadTrack(at: index, autoPlay: true)
+    }
+
+    // MARK: - Cover art download
+
+    /// Searches MusicBrainz for the current track's release, then downloads
+    /// the front cover from the Cover Art Archive and saves it as front.jpg
+    /// in the album directory.
+    func downloadCoverArt() {
+        guard isTrackLoaded,
+              currentTrackIndex < playlist.count else { return }
+        let artist  = currentArtist
+        let album   = currentAlbum
+        let destDir = playlist[currentTrackIndex].url.deletingLastPathComponent()
+
+        isDownloadingCoverArt = true
+        coverArtMessage = ""
+
+        Task {
+            defer { await MainActor.run { self.isDownloadingCoverArt = false } }
+
+            // 1. Ask MusicBrainz for a release MBID.
+            guard let mbid = await searchMusicBrainzRelease(artist: artist, album: album) else {
+                await MainActor.run { self.coverArtMessage = "Release not found on MusicBrainz" }
+                return
+            }
+
+            // 2. Download the front cover (CAA returns a 307 redirect; URLSession follows it).
+            guard let data = await fetchCAAFront(mbid: mbid) else {
+                await MainActor.run { self.coverArtMessage = "No cover art found in Cover Art Archive" }
+                return
+            }
+
+            // 3. Write to front.jpg in the album directory.
+            let dest = destDir.appendingPathComponent("front.jpg")
+            do {
+                try data.write(to: dest, options: .atomic)
+            } catch {
+                await MainActor.run { self.coverArtMessage = "Could not save: \(error.localizedDescription)" }
+                return
+            }
+
+            // 4. Show the downloaded image immediately.
+            await MainActor.run {
+                if let image = NSImage(data: data) {
+                    // Insert before any other directory artwork so it shows first.
+                    let insertAt = self.artworkImages.indices.contains(0) ? 0 : 0
+                    self.artworkImages.insert(image, at: insertAt)
+                    self.currentArtworkIndex = 0
+                }
+                self.coverArtMessage = "Cover art saved to album folder"
+            }
+        }
+    }
+
+    /// Searches the MusicBrainz release endpoint and returns the MBID of the
+    /// best-scoring result, or nil if nothing was found.
+    private func searchMusicBrainzRelease(artist: String, album: String) async -> String? {
+        var comps = URLComponents(string: "https://musicbrainz.org/ws/2/release")!
+        comps.queryItems = [
+            URLQueryItem(name: "query",
+                         value: "artist:\"\(artist)\" AND release:\"\(album)\""),
+            URLQueryItem(name: "fmt",   value: "json"),
+            URLQueryItem(name: "limit", value: "5"),
+        ]
+        guard let url = comps.url else { return nil }
+
+        var req = URLRequest(url: url)
+        // MusicBrainz requires a descriptive User-Agent.
+        req.setValue("AudioPlayer/1.0 (https://github.com/lar-ern/audio_player)",
+                     forHTTPHeaderField: "User-Agent")
+
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let json     = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let releases = json["releases"] as? [[String: Any]] else { return nil }
+
+        // Pick the highest-scoring result with score >= 70.
+        let best = releases
+            .compactMap { r -> (String, Int)? in
+                guard let id = r["id"] as? String,
+                      let score = r["score"] as? Int else { return nil }
+                return (id, score)
+            }
+            .filter { $0.1 >= 70 }
+            .max(by: { $0.1 < $1.1 })
+
+        return best?.0
+    }
+
+    /// Downloads the front cover for a given MusicBrainz release MBID from
+    /// the Cover Art Archive. Returns nil if no image is available.
+    private func fetchCAAFront(mbid: String) async -> Data? {
+        // Try the direct release endpoint first, then the release-group endpoint.
+        let candidates = [
+            "https://coverartarchive.org/release/\(mbid)/front",
+            "https://coverartarchive.org/release-group/\(mbid)/front",
+        ]
+        for urlString in candidates {
+            guard let url = URL(string: urlString) else { continue }
+            var req = URLRequest(url: url)
+            req.setValue("AudioPlayer/1.0 (https://github.com/lar-ern/audio_player)",
+                         forHTTPHeaderField: "User-Agent")
+            if let (data, resp) = try? await URLSession.shared.data(for: req),
+               let http = resp as? HTTPURLResponse,
+               http.statusCode == 200,
+               NSImage(data: data) != nil {
+                return data
+            }
+        }
+        return nil
     }
 
     func getTrackDuration(at index: Int) -> TimeInterval {
