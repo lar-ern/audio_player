@@ -539,13 +539,19 @@ class AudioPlayerManager: NSObject, ObservableObject {
         coverArtMessage = "Searching MusicBrainz…"
 
         Task {
-            defer { await MainActor.run { self.isDownloadingCoverArt = false } }
+            // Swift 5.9: no await in defer, no var captured in @Sendable closures.
+            // Use explicit finish helper and snapshot vars to let before closures.
+            func finish(_ msg: String) async {
+                await MainActor.run {
+                    self.coverArtMessage = msg
+                    self.isDownloadingCoverArt = false
+                }
+            }
 
             // 1. Find candidate release MBIDs (top-scoring results).
             let mbids = await searchMusicBrainzRelease(artist: artist, album: album)
             guard !mbids.isEmpty else {
-                await MainActor.run { self.coverArtMessage = "Release not found on MusicBrainz" }
-                return
+                await finish("Release not found on MusicBrainz"); return
             }
 
             // 2. Fetch the image list from CAA, trying each MBID until we get one.
@@ -555,11 +561,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 if !images.isEmpty { break }
             }
             guard !images.isEmpty else {
-                await MainActor.run { self.coverArtMessage = "No cover art found in Cover Art Archive" }
-                return
+                await finish("No cover art found in Cover Art Archive"); return
             }
 
-            await MainActor.run { self.coverArtMessage = "Downloading \(images.count) image(s)…" }
+            // Snapshot to let before use in @Sendable closure (Swift 5.9 requirement).
+            let imageCount = images.count
+            await MainActor.run { self.coverArtMessage = "Downloading \(imageCount) image(s)…" }
 
             // 3. Download and save each image.
             let typePriority: (String) -> Int = { t in
@@ -573,24 +580,20 @@ class AudioPlayerManager: NSObject, ObservableObject {
             }
 
             var bookletIndex = 0
-            var savedImages: [(NSImage, Int)] = []   // (image, insertPriority)
+            var collectedImages: [(NSImage, Int)] = []   // (image, insertPriority)
 
             for img in sorted {
                 let primaryType = img.types.first(where: { typePriority($0) < 9 }) ?? img.types.first ?? "Other"
                 let filename: String
                 let priority: Int
                 switch primaryType {
-                case "Front":
-                    filename = "front.jpg";   priority = 0
-                case "Back":
-                    filename = "back.jpg";    priority = 1
+                case "Front":   filename = "front.jpg";  priority = 0
+                case "Back":    filename = "back.jpg";   priority = 1
                 case "Booklet":
                     bookletIndex += 1
                     filename = String(format: "booklet-%02d.jpg", bookletIndex); priority = 2
-                case "Medium":
-                    filename = "medium.jpg";  priority = 3
-                default:
-                    continue
+                case "Medium":  filename = "medium.jpg"; priority = 3
+                default:        continue
                 }
 
                 let dest = destDir.appendingPathComponent(filename)
@@ -601,20 +604,24 @@ class AudioPlayerManager: NSObject, ObservableObject {
                       let image = NSImage(data: data) else { continue }
 
                 try? data.write(to: dest, options: .atomic)
-                savedImages.append((image, priority))
+                collectedImages.append((image, priority))
             }
 
+            // Snapshot to let before the @Sendable MainActor closure.
+            let finalImages = collectedImages
             await MainActor.run {
-                if savedImages.isEmpty {
+                if finalImages.isEmpty {
                     self.coverArtMessage = "All images already in album folder"
+                    self.isDownloadingCoverArt = false
                 } else {
                     // Insert in reverse-priority order so Front ends up at index 0.
-                    for (image, _) in savedImages.sorted(by: { $0.1 > $1.1 }) {
+                    for (image, _) in finalImages.sorted(by: { $0.1 > $1.1 }) {
                         self.artworkImages.insert(image, at: 0)
                     }
                     self.currentArtworkIndex = 0
-                    let n = savedImages.count
+                    let n = finalImages.count
                     self.coverArtMessage = "Saved \(n) image\(n == 1 ? "" : "s") to album folder"
+                    self.isDownloadingCoverArt = false
                 }
             }
         }
