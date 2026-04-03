@@ -580,7 +580,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
             }
 
             var bookletIndex = 0
-            var collectedImages: [(NSImage, Int)] = []   // (image, insertPriority)
+            var collectedImages: [(NSImage, Int)] = []
+            var skippedCount  = 0
+            var failedCount   = 0
 
             for img in sorted {
                 let primaryType = img.types.first(where: { typePriority($0) < 9 }) ?? img.types.first ?? "Other"
@@ -597,32 +599,44 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 }
 
                 let dest = destDir.appendingPathComponent(filename)
-                if FileManager.default.fileExists(atPath: dest.path) { continue }
+                if FileManager.default.fileExists(atPath: dest.path) { skippedCount += 1; continue }
 
-                guard let url  = URL(string: img.imageURL),
-                      let data = await downloadURL(url),
-                      let image = NSImage(data: data) else { continue }
+                guard let imgURL = URL(string: img.imageURL),
+                      let data   = await downloadURL(imgURL) else { failedCount += 1; continue }
 
-                try? data.write(to: dest, options: .atomic)
-                collectedImages.append((image, priority))
+                // Write first; only add to display if the file landed on disk.
+                do {
+                    try data.write(to: dest, options: .atomic)
+                    if let image = NSImage(data: data) {
+                        collectedImages.append((image, priority))
+                    }
+                } catch {
+                    failedCount += 1
+                    print("Cover art write failed (\(filename)): \(error.localizedDescription)")
+                }
             }
 
-            // Snapshot to let before the @Sendable MainActor closure.
-            let finalImages = collectedImages
+            let finalImages   = collectedImages
+            let finalSkipped  = skippedCount
+            let finalFailed   = failedCount
+            let finalDestPath = destDir.path
             await MainActor.run {
-                if finalImages.isEmpty {
-                    self.coverArtMessage = "All images already in album folder"
-                    self.isDownloadingCoverArt = false
-                } else {
-                    // Insert in reverse-priority order so Front ends up at index 0.
+                if !finalImages.isEmpty {
                     for (image, _) in finalImages.sorted(by: { $0.1 > $1.1 }) {
                         self.artworkImages.insert(image, at: 0)
                     }
                     self.currentArtworkIndex = 0
-                    let n = finalImages.count
-                    self.coverArtMessage = "Saved \(n) image\(n == 1 ? "" : "s") to album folder"
-                    self.isDownloadingCoverArt = false
+                    var msg = "Saved \(finalImages.count) image\(finalImages.count == 1 ? "" : "s")"
+                    if finalSkipped > 0 { msg += ", \(finalSkipped) already existed" }
+                    if finalFailed  > 0 { msg += ", \(finalFailed) failed" }
+                    self.coverArtMessage = msg
+                } else if finalSkipped > 0 && finalFailed == 0 {
+                    self.coverArtMessage = "Already in folder: \(finalDestPath)"
+                } else {
+                    // All downloads failed — show the destination path to help diagnose.
+                    self.coverArtMessage = "Download failed — saving to: \(finalDestPath)"
                 }
+                self.isDownloadingCoverArt = false
             }
         }
     }
