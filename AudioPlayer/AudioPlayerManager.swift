@@ -720,17 +720,28 @@ class AudioPlayerManager: NSObject, ObservableObject {
         return images.compactMap { img -> CAAImage? in
             // Only approved images.
             if let approved = img["approved"] as? Bool, !approved { return nil }
-            guard let types = img["types"] as? [String],
-                  types.contains(where: { wanted.contains($0) }),
+
+            // types can arrive as [String] or [Any] depending on the JSON parser.
+            let types: [String]
+            if let t = img["types"] as? [String] {
+                types = t
+            } else if let t = img["types"] as? [Any] {
+                types = t.compactMap { $0 as? String }
+            } else {
+                return nil
+            }
+            guard types.contains(where: { wanted.contains($0) }),
                   let fullURL = img["image"] as? String else { return nil }
 
-            // Prefer the 1200px thumbnail; fall back to full resolution.
-            let bestURL: String
-            if let thumbs = img["thumbnails"] as? [String: String],
-               let t1200  = thumbs["1200"] ?? thumbs["large"] {
-                bestURL = t1200
-            } else {
-                bestURL = fullURL
+            // Thumbnail URLs in the CAA JSON sometimes use http:// (blocked by ATS).
+            // Build the 1200px URL by looking in thumbnails, but only accept https://.
+            // Fall back to the full-resolution image URL which is always https://.
+            var bestURL = fullURL
+            if let thumbs = img["thumbnails"] as? [String: Any] {
+                let t1200 = (thumbs["1200"] as? String) ?? (thumbs["large"] as? String)
+                if let t = t1200, t.hasPrefix("https://") {
+                    bestURL = t
+                }
             }
 
             let id = (img["id"] as? Int).map(String.init)
@@ -741,8 +752,16 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     /// Downloads raw data from a URL, following redirects.
+    /// Upgrades http:// to https:// to satisfy App Transport Security.
     private func downloadURL(_ url: URL) async -> Data? {
-        var req = URLRequest(url: url)
+        // Ensure HTTPS — CAA/IA sometimes serves http:// URLs which ATS blocks.
+        var finalURL = url
+        if url.scheme == "http",
+           var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            comps.scheme = "https"
+            finalURL = comps.url ?? url
+        }
+        var req = URLRequest(url: finalURL, timeoutInterval: 30)
         req.setValue("AudioPlayer/1.0 (https://github.com/lar-ern/audio_player)",
                      forHTTPHeaderField: "User-Agent")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
