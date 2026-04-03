@@ -627,12 +627,44 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
     }
 
+    /// Strips parenthesised/bracketed tokens (year, bit depth, format, etc.)
+    /// and leading "Artist - " prefixes that appear in directory-derived names.
+    /// Examples:
+    ///   "Lou Reed - Ecstasy (2000)(24bit)" → album "Ecstasy", stripped of artist prefix
+    ///   "Paris 1919 [24bit FLAC]"          → "Paris 1919"
+    private func cleanForMusicBrainz(album: String, artist: String) -> (artist: String, album: String) {
+        func strip(_ s: String) -> String {
+            var r = s
+            // Remove anything inside ( … ) or [ … ], e.g. (2000), (24bit), [FLAC]
+            for pattern in [#"\s*\([^)]*\)"#, #"\s*\[[^\]]*\]"#] {
+                while let range = r.range(of: pattern, options: .regularExpression) {
+                    r.removeSubrange(range)
+                }
+            }
+            return r.trimmingCharacters(in: CharacterSet.whitespaces
+                .union(CharacterSet(charactersIn: "-–—")))
+        }
+
+        let cleanArtist = strip(artist)
+
+        // If album is "Artist - Title …", remove the artist prefix first.
+        var albumWork = album
+        let prefix = cleanArtist + " - "
+        if albumWork.lowercased().hasPrefix(prefix.lowercased()) {
+            albumWork = String(albumWork.dropFirst(prefix.count))
+        }
+        let cleanAlbum = strip(albumWork)
+
+        return (cleanArtist, cleanAlbum)
+    }
+
     /// Returns up to 5 release MBIDs from MusicBrainz, sorted best-score first.
     private func searchMusicBrainzRelease(artist: String, album: String) async -> [String] {
+        let clean = cleanForMusicBrainz(album: album, artist: artist)
         var comps = URLComponents(string: "https://musicbrainz.org/ws/2/release")!
         comps.queryItems = [
             URLQueryItem(name: "query",
-                         value: "artist:\"\(artist)\" AND release:\"\(album)\""),
+                         value: "artist:\"\(clean.artist)\" AND release:\"\(clean.album)\""),
             URLQueryItem(name: "fmt",   value: "json"),
             URLQueryItem(name: "limit", value: "5"),
         ]
