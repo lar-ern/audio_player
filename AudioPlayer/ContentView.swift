@@ -695,6 +695,7 @@ struct EQPopoverView: View {
 
 struct SettingsPopoverView: View {
     @Binding var gapDuration: Double
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
 
     private let gapSteps: [Double] = [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
 
@@ -723,8 +724,46 @@ struct SettingsPopoverView: View {
                     }
                 }
             }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Cover Art")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                Button(action: { audioPlayer.downloadCoverArt() }) {
+                    HStack(spacing: 6) {
+                        if audioPlayer.isDownloadingCoverArt {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                                .frame(width: 12, height: 12)
+                        } else {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.caption)
+                        }
+                        Text(audioPlayer.isDownloadingCoverArt ? "Searching…" : "Download from MusicBrainz")
+                            .font(.caption2)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity)
+                    .background(RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.primary.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+                .disabled(!audioPlayer.isTrackLoaded || audioPlayer.isDownloadingCoverArt)
+
+                if !audioPlayer.coverArtMessage.isEmpty {
+                    Text(audioPlayer.coverArtMessage)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .padding(12)
+        .frame(minWidth: 200)
     }
 
     private func gapLabel(_ gap: Double) -> String {
