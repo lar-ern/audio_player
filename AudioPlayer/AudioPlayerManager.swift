@@ -112,8 +112,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
             self.stopTimer()
             self.currentTime = self.duration
 
-            guard self.playlist.count > 1 || self.currentTrackIndex < self.playlist.count - 1 else { return }
-            let nextIndex = (self.currentTrackIndex + 1) % self.playlist.count
+            let nextIndex = self.currentTrackIndex + 1
+            guard nextIndex < self.playlist.count else { return }  // stop at end
             if self.gapDuration <= 0 {
                 // No gap — start next track immediately
                 self.loadTrack(at: nextIndex, autoPlay: true)
@@ -803,7 +803,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 isPlaying = false
                 stopTimer()
             } else {
-                try audioEngine.play()
+                // Resume from the paused position — don't reschedule the buffer from the start.
+                try audioEngine.resume()
                 isPlaying = true
                 playbackStartTime = Date()
                 startTimer()
