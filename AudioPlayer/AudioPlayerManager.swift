@@ -439,36 +439,27 @@ class AudioPlayerManager: NSObject, ObservableObject {
         extractMetadata(from: url, generation: generation)
         scanDirectoryArtworks(for: url, generation: generation)
 
+        // Opening an AVAudioFile just reads the file header — no PCM decoding.
+        // Keep it on a background queue to avoid any filesystem latency on main.
         loadQueue.async { [weak self] in
             guard let self = self, self.loadGeneration == generation else { return }
 
+            // Use preloaded file if available, otherwise open fresh.
+            var file: AVAudioFile?
+            self.audioEngine.preloadQueue.sync {
+                if self.audioEngine.preloadedURL == url {
+                    file = self.audioEngine.preloadedFile
+                }
+            }
+
             do {
-                var file: AVAudioFile
-                var buffer: AVAudioPCMBuffer
-
-                var preFile: AVAudioFile?
-                var preBuf: AVAudioPCMBuffer?
-                var preURL: URL?
-                self.audioEngine.preloadQueue.sync {
-                    preFile = self.audioEngine.preloadedFile
-                    preBuf  = self.audioEngine.preloadedBuffer
-                    preURL  = self.audioEngine.preloadedURL
-                }
-
-                if preURL == url, let pf = preFile, let pb = preBuf {
-                    file   = pf
-                    buffer = pb
-                } else {
-                    file   = try AVAudioFile(forReading: url)
-                    buffer = try self.audioEngine.bufferFile(file)
-                }
-
+                let audioFile = try file ?? AVAudioFile(forReading: url)
                 guard self.loadGeneration == generation else { return }
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, self.loadGeneration == generation else { return }
                     do {
-                        self.audioEngine.setContent(file: file, buffer: buffer)
+                        self.audioEngine.setContent(file: audioFile)
                         try self.audioEngine.prepareForPlayback()
                         self.audioEngine.setVolume(Float(self.volume))
                         self.updateEQ()
@@ -481,7 +472,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                         self.isTrackLoaded = true
 
                         if autoPlay {
-                            try self.audioEngine.play()
+                            try self.audioEngine.resume()
                             self.isPlaying = true
                             self.playbackStartTime = Date()
                         }
@@ -507,9 +498,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     private func preloadNextTrack(after index: Int) {
-        guard playlist.count > 1 else { return }
-        let nextIndex = (index + 1) % playlist.count
-        audioEngine.preloadFile(url: playlist[nextIndex].url)
+        guard index + 1 < playlist.count else { return }
+        audioEngine.preloadFile(url: playlist[index + 1].url)
     }
 
     /// Always starts playback regardless of current play/pause state.
@@ -644,13 +634,19 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// Strips parenthesised/bracketed tokens (year, bit depth, format, etc.)
     /// and leading "Artist - " prefixes that appear in directory-derived names.
     /// Examples:
-    ///   "Lou Reed - Ecstasy (2000)(24bit)" → album "Ecstasy", stripped of artist prefix
-    ///   "Paris 1919 [24bit FLAC]"          → "Paris 1919"
+    ///   "Lou Reed - Ecstasy (2000)(24bit)"        → album "Ecstasy"
+    ///   "Joe Ely - 1990 - Live at Liberty Lunch"  → album "Live at Liberty Lunch"
+    ///   "Paris 1919 [24bit FLAC]"                 → "Paris 1919"
     private func cleanForMusicBrainz(album: String, artist: String) -> (artist: String, album: String) {
         func strip(_ s: String) -> String {
             var r = s
-            // Remove anything inside ( … ) or [ … ], e.g. (2000), (24bit), [FLAC]
-            for pattern in [#"\s*\([^)]*\)"#, #"\s*\[[^\]]*\]"#] {
+            let patterns: [String] = [
+                #"\s*\([^)]*\)"#,                   // (anything) e.g. (2000), (24bit)
+                #"\s*\[[^\]]*\]"#,                  // [anything] e.g. [FLAC]
+                #"\b(19|20)\d{2}\b\s*[-–—]\s*"#,   // bare year followed by dash: "1990 - "
+                #"\s*[-–—]\s*(19|20)\d{2}\b"#,     // bare year preceded by dash: " - 1990"
+            ]
+            for pattern in patterns {
                 while let range = r.range(of: pattern, options: .regularExpression) {
                     r.removeSubrange(range)
                 }
@@ -925,7 +921,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private func startTimer() {
         timer?.invalidate()
         playbackStartTime = Date()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self = self else { return }
 
             if self.isPlaying, let startTime = self.playbackStartTime {
