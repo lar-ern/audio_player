@@ -12,6 +12,8 @@ class AudioEngine {
 
     // Generation counter to distinguish stale completion callbacks
     private var playGeneration: Int = 0
+    // True when player was paused (as opposed to stopped); resume() just calls player.play()
+    private var isPaused: Bool = false
 
     // Pre-buffered next track (protected by serial queue)
     var preloadedFile: AVAudioFile?
@@ -263,6 +265,23 @@ class AudioEngine {
 
     func pause() {
         playerNode?.pause()
+        isPaused = true
+    }
+
+    /// Resume playback from where it was paused, without rescheduling the buffer.
+    func resume() throws {
+        guard let engine = engine, let player = playerNode else {
+            throw AudioEngineError.notInitialized
+        }
+        if !engine.isRunning {
+            // Engine was stopped unexpectedly (e.g. config change while paused).
+            // Fall back to a full reschedule from the saved position.
+            guard let buffer = audioBuffer else { throw AudioEngineError.notInitialized }
+            try engine.start()
+            scheduleBufferWithCompletion(buffer)
+        }
+        player.play()
+        isPaused = false
     }
 
     /// Soft stop: stops the player node but keeps the engine running for quick transitions.
@@ -270,6 +289,7 @@ class AudioEngine {
         playGeneration += 1
         playerNode?.stop()
         currentFramePosition = 0
+        isPaused = false
     }
 
     /// Hard stop: stops both the player node and the audio engine.
@@ -280,6 +300,7 @@ class AudioEngine {
         engine?.stop()
         currentFramePosition = 0
         connectedFormat = nil
+        isPaused = false
     }
 
     func seek(to time: TimeInterval, forcePlay: Bool = false) throws {

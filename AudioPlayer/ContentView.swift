@@ -734,11 +734,11 @@ struct PlaylistItemView: View {
                 .fill(isCurrentTrack ? Color(white: 0.45).opacity(0.15) : Color.clear)
         )
         .contentShape(Rectangle())
-        // Double-click starts playback; single click selects (respects play state).
-        .gesture(
-            TapGesture(count: 2).onEnded { onDoubleClick() }
-                .exclusively(before: TapGesture(count: 1).onEnded { onSelect() })
-        )
+        // Double-click starts playback; single click selects immediately (no delay).
+        // Two separate modifiers: the double-tap fires on the second tap instantly;
+        // the single-tap fires on first tap without waiting for a possible second tap.
+        .onTapGesture(count: 2) { onDoubleClick() }
+        .onTapGesture(count: 1) { onSelect() }
     }
 
     private func timeString(from seconds: Double) -> String {
