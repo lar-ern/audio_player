@@ -644,13 +644,19 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// Strips parenthesised/bracketed tokens (year, bit depth, format, etc.)
     /// and leading "Artist - " prefixes that appear in directory-derived names.
     /// Examples:
-    ///   "Lou Reed - Ecstasy (2000)(24bit)" → album "Ecstasy", stripped of artist prefix
-    ///   "Paris 1919 [24bit FLAC]"          → "Paris 1919"
+    ///   "Lou Reed - Ecstasy (2000)(24bit)"        → album "Ecstasy"
+    ///   "Joe Ely - 1990 - Live at Liberty Lunch"  → album "Live at Liberty Lunch"
+    ///   "Paris 1919 [24bit FLAC]"                 → "Paris 1919"
     private func cleanForMusicBrainz(album: String, artist: String) -> (artist: String, album: String) {
         func strip(_ s: String) -> String {
             var r = s
-            // Remove anything inside ( … ) or [ … ], e.g. (2000), (24bit), [FLAC]
-            for pattern in [#"\s*\([^)]*\)"#, #"\s*\[[^\]]*\]"#] {
+            let patterns: [String] = [
+                #"\s*\([^)]*\)"#,                   // (anything) e.g. (2000), (24bit)
+                #"\s*\[[^\]]*\]"#,                  // [anything] e.g. [FLAC]
+                #"\b(19|20)\d{2}\b\s*[-–—]\s*"#,   // bare year followed by dash: "1990 - "
+                #"\s*[-–—]\s*(19|20)\d{2}\b"#,     // bare year preceded by dash: " - 1990"
+            ]
+            for pattern in patterns {
                 while let range = r.range(of: pattern, options: .regularExpression) {
                     r.removeSubrange(range)
                 }
