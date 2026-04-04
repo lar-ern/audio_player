@@ -481,7 +481,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                         self.isTrackLoaded = true
 
                         if autoPlay {
-                            try self.audioEngine.play()
+                            try self.audioEngine.resume()
                             self.isPlaying = true
                             self.playbackStartTime = Date()
                         }

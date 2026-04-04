@@ -208,6 +208,8 @@ class AudioEngine {
     }
 
     /// Prepare audio graph for playback. Only reconnects nodes if the format has changed.
+    /// Also starts the engine eagerly so the audio hardware is warm before the user
+    /// presses play — avoids a synchronous engine.start() on the main thread later.
     func prepareForPlayback() throws {
         guard let file = audioFile,
               let engine = engine,
@@ -232,6 +234,13 @@ class AudioEngine {
         }
 
         engine.prepare()
+
+        // Start the engine now so the audio hardware is ready.
+        // play() / resume() won't need to call engine.start() when the button is pressed.
+        if !engine.isRunning {
+            try engine.start()
+        }
+
         currentFramePosition = 0
     }
 
@@ -268,19 +277,27 @@ class AudioEngine {
         isPaused = true
     }
 
-    /// Resume playback from where it was paused, without rescheduling the buffer.
+    /// Play or resume. If the player was paused, resumes from the paused position
+    /// without rescheduling the buffer. If the player was stopped (first play or after
+    /// a track switch), schedules the full buffer and starts the player.
     func resume() throws {
         guard let engine = engine, let player = playerNode else {
             throw AudioEngineError.notInitialized
         }
         if !engine.isRunning {
-            // Engine was stopped unexpectedly (e.g. config change while paused).
-            // Fall back to a full reschedule from the saved position.
-            guard let buffer = audioBuffer else { throw AudioEngineError.notInitialized }
+            // prepareForPlayback() starts the engine eagerly, so this path is only
+            // hit if the engine stopped unexpectedly (e.g. config change while paused).
             try engine.start()
-            scheduleBufferWithCompletion(buffer)
         }
-        player.play()
+        if isPaused {
+            // Buffer is still scheduled mid-stream — just unpause the player.
+            player.play()
+        } else {
+            // First play after load, or after a stop — schedule the buffer then play.
+            guard let buffer = audioBuffer else { throw AudioEngineError.notInitialized }
+            scheduleBufferWithCompletion(buffer)
+            player.play()
+        }
         isPaused = false
     }
 
