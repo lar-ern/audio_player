@@ -1,5 +1,4 @@
 import SwiftUI
-import CoreAudio
 
 // ContentView is intentionally a zero-logic shell. Its body calls no SwiftUI API —
 // just a plain struct init — so SwiftUI+19950082 (_assertionFailure in SwiftUI 4.6.3
@@ -216,9 +215,10 @@ struct PlaylistView: View {
 
 struct PlayerControlsView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
-    @State private var showVolumePopup = false
-    @State private var showEQPopup = false
-    @State private var showSettingsPopup = false
+    @State private var showVolumePopup    = false
+    @State private var showEQPopup        = false
+    @State private var showSettingsPopup  = false
+    @State private var showLargeArtwork   = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -255,11 +255,22 @@ struct PlayerControlsView: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                AudioOutputPickerView()
-                    .frame(width: 32, height: 32)
-                    .background(Color.black.opacity(0.5))
-                    .clipShape(Circle())
+                if !audioPlayer.artworkImages.isEmpty {
+                    Button(action: { showLargeArtwork = true }) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 12))
+                            .foregroundColor(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.black.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
                     .padding(8)
+                    .sheet(isPresented: $showLargeArtwork) {
+                        LargeArtworkSheet()
+                            .environmentObject(audioPlayer)
+                    }
+                }
             }
             .overlay(alignment: .bottomLeading) {
                 Button(action: {
@@ -471,162 +482,59 @@ struct VolumePopoverView: View {
     }
 }
 
-/// Output-device picker backed by CoreAudio.
-/// Lists every device that has output streams and changes the system default
-/// when the user picks one — the same property macOS System Settings controls.
-/// AVAudioEngine follows the system default automatically, so this stays in sync.
-struct AudioOutputPickerView: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSButton {
-        let button = NSButton()
-        button.bezelStyle = .regularSquare
-        button.isBordered = false
-        button.imageScaling = .scaleProportionallyUpOrDown
-        button.image = NSImage(systemSymbolName: "airplayaudio",
-                               accessibilityDescription: "Audio Output")
-        button.contentTintColor = NSColor(white: 0.85, alpha: 1.0)
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.showMenu(_:))
-        return button
-    }
+/// Full-size artwork viewer — opens in a sheet at 800 px wide.
+struct LargeArtworkSheet: View {
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var index: Int = 0
 
-    func updateNSView(_ nsView: NSButton, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    class Coordinator: NSObject {
-        @objc func showMenu(_ sender: NSButton) {
-            let menu = NSMenu()
-            let currentID = systemDefaultOutputDeviceID()
-            for (id, name) in outputDevices() {
-                let item = NSMenuItem(title: name,
-                                      action: #selector(selectDevice(_:)),
-                                      keyEquivalent: "")
-                item.target = self
-                item.representedObject = NSNumber(value: id)
-                item.state = (id == currentID) ? .on : .off
-                menu.addItem(item)
-            }
-            let origin = NSPoint(x: 0, y: sender.bounds.height + 4)
-            menu.popUp(positioning: nil, at: origin, in: sender)
-        }
-
-        @objc func selectDevice(_ item: NSMenuItem) {
-            guard let n = item.representedObject as? NSNumber else { return }
-            var id = AudioDeviceID(n.uint32Value)
-            var addr = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain)
-            AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject),
-                                       &addr, 0, nil,
-                                       UInt32(MemoryLayout<AudioDeviceID>.size), &id)
-        }
-
-        private func systemDefaultOutputDeviceID() -> AudioDeviceID {
-            var id = AudioDeviceID(kAudioObjectUnknown)
-            var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-            var addr = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain)
-            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
-                                       &addr, 0, nil, &size, &id)
-            return id
-        }
-
-        private func outputDevices() -> [(AudioDeviceID, String)] {
-            let sys = AudioObjectID(kAudioObjectSystemObject)
-            var addr = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDevices,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain)
-            var size: UInt32 = 0
-            guard AudioObjectGetPropertyDataSize(sys, &addr, 0, nil, &size) == noErr else { return [] }
-            let count = Int(size) / MemoryLayout<AudioDeviceID>.size
-            var ids = [AudioDeviceID](repeating: AudioDeviceID(kAudioObjectUnknown), count: count)
-            AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &ids)
-
-            return ids.compactMap { id -> (AudioDeviceID, String)? in
-                // Skip aggregate/virtual devices (CADefaultDeviceAggregate, etc.)
-                var transportAddr = AudioObjectPropertyAddress(
-                    mSelector: kAudioDevicePropertyTransportType,
-                    mScope: kAudioObjectPropertyScopeGlobal,
-                    mElement: kAudioObjectPropertyElementMain)
-                var transport: UInt32 = 0
-                var transportSize = UInt32(MemoryLayout<UInt32>.size)
-                AudioObjectGetPropertyData(id, &transportAddr, 0, nil, &transportSize, &transport)
-                guard transport != kAudioDeviceTransportTypeAggregate,
-                      transport != kAudioDeviceTransportTypeAutoAggregate,
-                      transport != kAudioDeviceTransportTypeVirtual else { return nil }
-
-                // Skip devices explicitly marked hidden by CoreAudio.
-                var hiddenAddr = AudioObjectPropertyAddress(
-                    mSelector: kAudioDevicePropertyIsHidden,
-                    mScope: kAudioObjectPropertyScopeGlobal,
-                    mElement: kAudioObjectPropertyElementMain)
-                var isHidden: UInt32 = 0
-                var hiddenSize = UInt32(MemoryLayout<UInt32>.size)
-                AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &isHidden)
-                guard isHidden == 0 else { return nil }
-
-                // Must have at least one output stream.
-                var outAddr = AudioObjectPropertyAddress(
-                    mSelector: kAudioDevicePropertyStreams,
-                    mScope: kAudioObjectPropertyScopeOutput,
-                    mElement: kAudioObjectPropertyElementMain)
-                var outSize: UInt32 = 0
-                guard AudioObjectGetPropertyDataSize(id, &outAddr, 0, nil, &outSize) == noErr,
-                      outSize > 0 else { return nil }
-
-                return (id, deviceDisplayName(for: id))
-            }
-        }
-
-        // Returns the most user-friendly name for an output device.
-        // Tries the active output source name first (gives "Internal Speakers",
-        // "Headphones", or the specific AirPlay device name). Falls back to the
-        // HAL device name (e.g. "Built-in Output").
-        private func deviceDisplayName(for id: AudioDeviceID) -> String {
-            // 1. Get the active output source ID.
-            var srcAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDataSource,
-                mScope: kAudioObjectPropertyScopeOutput,
-                mElement: kAudioObjectPropertyElementMain)
-            var sourceID: UInt32 = 0
-            var srcSize = UInt32(MemoryLayout<UInt32>.size)
-            if AudioObjectGetPropertyData(id, &srcAddr, 0, nil, &srcSize, &sourceID) == noErr {
-                // 2. Translate source ID → source name.
-                var cfSourceName: CFString? = nil
-                withUnsafeMutablePointer(to: &cfSourceName) { namePtr in
-                    withUnsafeMutablePointer(to: &sourceID) { srcPtr in
-                        var translation = AudioValueTranslation(
-                            mInputData: srcPtr,
-                            mInputDataSize: UInt32(MemoryLayout<UInt32>.size),
-                            mOutputData: namePtr,
-                            mOutputDataSize: UInt32(MemoryLayout<CFString?>.size))
-                        var nameAddr = AudioObjectPropertyAddress(
-                            mSelector: kAudioDevicePropertyDataSourceNameForIDCFString,
-                            mScope: kAudioObjectPropertyScopeOutput,
-                            mElement: kAudioObjectPropertyElementMain)
-                        var translationSize = UInt32(MemoryLayout<AudioValueTranslation>.size)
-                        AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &translationSize, &translation)
+    var body: some View {
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack {
+                if audioPlayer.artworkImages.count > 1 {
+                    Button(action: { index = max(index - 1, 0) }) {
+                        Image(systemName: "chevron.left")
                     }
-                }
-                if let name = cfSourceName as String?, !name.isEmpty {
-                    return name
-                }
-            }
+                    .buttonStyle(.plain)
+                    .disabled(index == 0)
 
-            // 3. Fall back to the HAL device name.
-            var nameAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioObjectPropertyName,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain)
-            var nameSize = UInt32(MemoryLayout<CFString?>.size)
-            var cfName: CFString? = nil
-            AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName)
-            return (cfName as String?) ?? "Unknown Device"
+                    Text("\(index + 1) / \(audioPlayer.artworkImages.count)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Button(action: { index = min(index + 1, audioPlayer.artworkImages.count - 1) }) {
+                        Image(systemName: "chevron.right")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(index == audioPlayer.artworkImages.count - 1)
+
+                    Spacer()
+                } else {
+                    Spacer()
+                }
+
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            // Artwork
+            if index < audioPlayer.artworkImages.count {
+                let img = audioPlayer.artworkImages[index]
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 800)
+            }
         }
+        .frame(width: 800)
+        .onAppear { index = audioPlayer.currentArtworkIndex }
     }
 }
 
