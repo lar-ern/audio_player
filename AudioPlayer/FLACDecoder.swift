@@ -139,8 +139,9 @@ class AudioEngine {
 
     // MARK: - Playback preparation
 
-    /// Connects nodes (only when the format changes) and starts the engine so
-    /// the audio hardware is warm before the user presses play.
+    /// Connects nodes (only when the format changes), starts the engine, and
+    /// pre-schedules the file so the I/O pipeline is primed before the user
+    /// presses play — resume() then just calls player.play() with zero latency.
     func prepareForPlayback() throws {
         guard let file = audioFile,
               let engine = engine,
@@ -150,8 +151,9 @@ class AudioEngine {
         }
 
         let newFormat = file.processingFormat
+        let graphChanged = (connectedFormat == nil || connectedFormat != newFormat)
 
-        if connectedFormat == nil || connectedFormat != newFormat {
+        if graphChanged {
             engine.disconnectNodeOutput(player)
             engine.disconnectNodeOutput(eq)
             engine.connect(player, to: eq, format: newFormat)
@@ -159,11 +161,21 @@ class AudioEngine {
             connectedFormat = newFormat
         }
 
-        engine.prepare()
+        // engine.prepare() pre-allocates buffers; only call when the graph changed
+        // or the engine hasn't started yet — skipping it on every load saves ~10ms.
+        if graphChanged || !engine.isRunning {
+            engine.prepare()
+        }
 
         if !engine.isRunning {
             try engine.start()
         }
+
+        // Pre-schedule the file now so resume() = player.play() with no added latency.
+        // player.stop() first to clear any leftover schedule from the previous track.
+        player.stop()
+        scheduleFileFromStart()
+        isPaused = false
     }
 
     // MARK: - Transport
@@ -179,24 +191,22 @@ class AudioEngine {
         }
     }
 
-    /// Play or resume.
-    /// - If paused: resumes the player from where it stopped (no re-scheduling).
-    /// - Otherwise: schedules the file from the beginning and starts playing.
+    /// Start or resume playback. In all normal cases this is just player.play():
+    /// - First play after load: file was pre-scheduled in prepareForPlayback()
+    /// - Resume after pause:    player resumes from its paused position
+    /// - After seek:            segment was re-scheduled in seek(to:)
     func resume() throws {
         guard let engine = engine, let player = playerNode else {
             throw AudioEngineError.notInitialized
         }
+        // Engine should already be running (started in prepareForPlayback).
+        // Re-start only if it stopped unexpectedly (e.g. config change while paused).
         if !engine.isRunning {
-            // prepareForPlayback() warms the engine, so this only happens if
-            // the engine stopped unexpectedly (e.g. config change while paused).
             try engine.start()
+            // Fresh engine after unexpected stop: re-schedule so there is something to play.
+            if !isPaused { scheduleFileFromStart() }
         }
-        if isPaused {
-            player.play()
-        } else {
-            scheduleFileFromStart()
-            player.play()
-        }
+        player.play()
         isPaused = false
     }
 
