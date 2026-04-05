@@ -85,6 +85,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     private var audioEngine = AudioEngine()
+    let upnpManager = UPnPOutputManager()
     private var timer: Timer?
     private var trackGapTimer: Timer?
     private var playbackStartTime: Date?
@@ -117,24 +118,32 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
         super.init()
 
+        // Shared end-of-track handler used by both local engine and UPnP renderer.
+        let handleFinished: (AudioPlayerManager) -> Void = { mgr in
+            mgr.isPlaying = false
+            mgr.stopTimer()
+            mgr.currentTime = mgr.duration
+
+            let nextIndex = mgr.currentTrackIndex + 1
+            guard nextIndex < mgr.playlist.count else { return }  // stop at end
+            if mgr.gapDuration <= 0 {
+                mgr.loadTrack(at: nextIndex, autoPlay: true)
+            } else {
+                mgr.trackGapTimer = Timer.scheduledTimer(withTimeInterval: mgr.gapDuration, repeats: false) { [weak mgr] _ in
+                    mgr?.loadTrack(at: nextIndex, autoPlay: true)
+                }
+            }
+        }
+
         // Set up playback completion handler (only fires on natural end, not manual stop)
         audioEngine.onPlaybackFinished = { [weak self] in
             guard let self = self else { return }
-            self.isPlaying = false
-            self.stopTimer()
-            self.currentTime = self.duration
+            handleFinished(self)
+        }
 
-            let nextIndex = self.currentTrackIndex + 1
-            guard nextIndex < self.playlist.count else { return }  // stop at end
-            if self.gapDuration <= 0 {
-                // No gap — start next track immediately
-                self.loadTrack(at: nextIndex, autoPlay: true)
-            } else {
-                self.trackGapTimer = Timer.scheduledTimer(withTimeInterval: self.gapDuration, repeats: false) { [weak self] _ in
-                    guard let self = self else { return }
-                    self.loadTrack(at: nextIndex, autoPlay: true)
-                }
-            }
+        upnpManager.onPlaybackFinished = { [weak self] in
+            guard let self = self else { return }
+            handleFinished(self)
         }
 
         // Apply initial EQ settings
@@ -812,6 +821,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         trackGapTimer?.invalidate()
         trackGapTimer = nil
         audioEngine.stop()
+        if upnpManager.isActive {
+            Task { try? await upnpManager.stop() }
+        }
         stopTimer()
         isPlaying = false
         artworkImages = []
@@ -822,6 +834,31 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     func togglePlayPause() {
+        if upnpManager.isActive {
+            if isPlaying {
+                Task {
+                    do {
+                        try await upnpManager.pause()
+                        self.isPlaying = false
+                        self.stopTimer()
+                    } catch {
+                        print("UPnP pause failed: \(error.localizedDescription)")
+                    }
+                }
+            } else {
+                Task {
+                    do {
+                        try await upnpManager.resume()
+                        self.isPlaying = true
+                        self.startTimer()
+                    } catch {
+                        print("UPnP resume failed: \(error.localizedDescription)")
+                    }
+                }
+            }
+            return
+        }
+
         do {
             if isPlaying {
                 // Save current position before pausing
@@ -845,6 +882,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     func seek(to time: Double) {
+        if upnpManager.isActive {
+            Task {
+                do {
+                    try await upnpManager.seek(to: time)
+                    self.currentTime = time
+                } catch {
+                    print("UPnP seek failed: \(error.localizedDescription)")
+                }
+            }
+            return
+        }
         do {
             try audioEngine.seek(to: time)
             currentTime = time
@@ -887,23 +935,54 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private func completePendingLoad(file: AVAudioFile, url: URL?,
                                      autoPlay: Bool, generation: Int) {
         guard loadGeneration == generation else { return }
+
+        // Duration is always derived from the file itself.
+        let fileSampleRate = file.processingFormat.sampleRate
+        let d = Double(file.length) / fileSampleRate
+        duration = d
+        if let url = url { durationCache[url] = d }
+        currentTime = 0
+        playbackStartPosition = 0
+        isTrackLoaded = true
+
+        if upnpManager.isActive {
+            // Route audio to UPnP renderer — skip local engine.
+            if autoPlay, let fileURL = url {
+                let title  = currentTrackName
+                let artist = currentArtist
+                let album  = currentAlbum
+                Task {
+                    do {
+                        try await self.upnpManager.play(fileURL: fileURL,
+                                                        title: title,
+                                                        artist: artist,
+                                                        album: album)
+                        self.isPlaying = true
+                        self.startTimer()
+                    } catch {
+                        print("UPnP play failed: \(error.localizedDescription)")
+                    }
+                }
+            } else {
+                startTimer()
+            }
+            if let url = url,
+               let idx = playlist.firstIndex(where: { $0.url == url }) {
+                preloadNextTrack(after: idx)
+            }
+            return
+        }
+
+        // Local audio engine path.
         do {
             // Update converting flag: true if file rate ≠ device rate.
-            let fileRate   = file.processingFormat.sampleRate
             let deviceRate = currentOutputSampleRate()
-            isRateConverting = abs(fileRate - deviceRate) > 1.0
+            isRateConverting = abs(fileSampleRate - deviceRate) > 1.0
 
             audioEngine.setContent(file: file)
             try audioEngine.prepareForPlayback()
             audioEngine.setVolume(Float(volume))
             updateEQ()
-
-            let d = audioEngine.duration
-            duration = d
-            if let url = url { durationCache[url] = d }
-            currentTime = 0
-            playbackStartPosition = 0
-            isTrackLoaded = true
 
             if autoPlay {
                 try audioEngine.resume()
@@ -1110,8 +1189,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
         playbackStartTime = Date()
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-
-            if self.isPlaying, let startTime = self.playbackStartTime {
+            if self.upnpManager.isActive {
+                if self.isPlaying {
+                    self.currentTime = self.upnpManager.rendererPosition
+                }
+            } else if self.isPlaying, let startTime = self.playbackStartTime {
                 let elapsed = Date().timeIntervalSince(startTime)
                 self.currentTime = min(self.playbackStartPosition + elapsed, self.duration)
             }

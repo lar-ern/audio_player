@@ -340,7 +340,17 @@ struct PlayerControlsView: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
-                        if !audioPlayer.outputSampleRate.isEmpty {
+                        if audioPlayer.upnpManager.isActive,
+                           let device = audioPlayer.upnpManager.selectedDevice {
+                            HStack(spacing: 3) {
+                                Image(systemName: "hifispeaker.2.fill")
+                                    .font(.caption2)
+                                Text(device.name)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                            }
+                            .foregroundColor(.blue)
+                        } else if !audioPlayer.outputSampleRate.isEmpty {
                             Text(audioPlayer.outputSampleRate)
                                 .font(.caption2)
                                 .foregroundColor(audioPlayer.isRateConverting ? .orange : .secondary)
@@ -640,6 +650,10 @@ struct SettingsPopoverView: View {
 
             Divider()
 
+            UPnPOutputPickerView()
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Cover Art")
                     .font(.caption2)
@@ -676,12 +690,111 @@ struct SettingsPopoverView: View {
             }
         }
         .padding(12)
-        .frame(minWidth: 200)
+        .frame(minWidth: 220)
     }
 
     private func gapLabel(_ gap: Double) -> String {
         if gap == 0 { return "0s" }
         return gap == gap.rounded() ? "\(Int(gap))s" : String(format: "%.1fs", gap)
+    }
+}
+
+// MARK: - UPnP Output Picker
+
+struct UPnPOutputPickerView: View {
+    @EnvironmentObject var audioPlayer: AudioPlayerManager
+
+    var body: some View {
+        let upnp = audioPlayer.upnpManager
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Output")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button(action: { upnp.discover() }) {
+                    HStack(spacing: 3) {
+                        if upnp.isDiscovering {
+                            ProgressView()
+                                .scaleEffect(0.5)
+                                .frame(width: 10, height: 10)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption2)
+                        }
+                        Text("Scan")
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(upnp.isDiscovering)
+            }
+
+            // Mac (local) option
+            Button(action: { upnp.selectDevice(nil) }) {
+                HStack(spacing: 6) {
+                    Image(systemName: upnp.selectedDevice == nil ? "checkmark" : "")
+                        .font(.caption2)
+                        .frame(width: 12)
+                        .foregroundColor(upnp.selectedDevice == nil ? .primary : .clear)
+                    Image(systemName: "hifispeaker.fill")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("This Mac")
+                        .font(.caption2)
+                    Spacer()
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 4)
+                    .fill(upnp.selectedDevice == nil
+                          ? Color(white: 0.35).opacity(0.5)
+                          : Color.clear))
+            }
+            .buttonStyle(.plain)
+
+            // Discovered UPnP renderers
+            ForEach(upnp.discoveredDevices) { device in
+                Button(action: { upnp.selectDevice(device) }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: upnp.selectedDevice == device ? "checkmark" : "")
+                            .font(.caption2)
+                            .frame(width: 12)
+                            .foregroundColor(upnp.selectedDevice == device ? .primary : .clear)
+                        Image(systemName: "hifispeaker.2.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(device.name)
+                                .font(.caption2)
+                                .lineLimit(1)
+                            if !device.modelName.isEmpty {
+                                Text(device.modelName)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 4)
+                        .fill(upnp.selectedDevice == device
+                              ? Color(white: 0.35).opacity(0.5)
+                              : Color.clear))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if upnp.discoveredDevices.isEmpty && !upnp.isDiscovering {
+                Text("No UPnP renderers found — tap Scan")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .italic()
+            }
+        }
     }
 }
 

@@ -11,6 +11,7 @@
 		B7A5241E2F2A632600EB853D /* FLACDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A5241C2F2A632600EB853D /* FLACDecoder.swift */; };
 		B7A5241F2F2A632600EB853D /* AudioPlayerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A524192F2A632600EB853D /* AudioPlayerApp.swift */; };
 		B7A524202F2A632600EB853D /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A5241B2F2A632600EB853D /* ContentView.swift */; };
+		B7A524222F2A632600EB853D /* UPnPOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A524212F2A632600EB853D /* UPnPOutput.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -19,6 +20,7 @@
 		B7A5241A2F2A632600EB853D /* AudioPlayerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioPlayerManager.swift; path = ../AudioPlayerManager.swift; sourceTree = SOURCE_ROOT; };
 		B7A5241B2F2A632600EB853D /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ../ContentView.swift; sourceTree = SOURCE_ROOT; };
 		B7A5241C2F2A632600EB853D /* FLACDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FLACDecoder.swift; path = ../FLACDecoder.swift; sourceTree = SOURCE_ROOT; };
+		B7A524212F2A632600EB853D /* UPnPOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = UPnPOutput.swift; path = ../UPnPOutput.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -47,6 +49,7 @@
 				B7A5241A2F2A632600EB853D /* AudioPlayerManager.swift */,
 				B7A5241B2F2A632600EB853D /* ContentView.swift */,
 				B7A5241C2F2A632600EB853D /* FLACDecoder.swift */,
+				B7A524212F2A632600EB853D /* UPnPOutput.swift */,
 				B7A524052F2A5EE300EB853D /* AudioPlayer */,
 				B7A524042F2A5EE300EB853D /* Products */,
 			);
@@ -139,6 +142,7 @@
 				B7A5241E2F2A632600EB853D /* FLACDecoder.swift in Sources */,
 				B7A5241F2F2A632600EB853D /* AudioPlayerApp.swift in Sources */,
 				B7A524202F2A632600EB853D /* ContentView.swift in Sources */,
+				B7A524222F2A632600EB853D /* UPnPOutput.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
