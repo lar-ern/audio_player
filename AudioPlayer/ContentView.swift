@@ -340,6 +340,11 @@ struct PlayerControlsView: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
+                        if !audioPlayer.outputSampleRate.isEmpty {
+                            Text(audioPlayer.outputSampleRate)
+                                .font(.caption2)
+                                .foregroundColor(audioPlayer.isRateConverting ? .orange : .secondary)
+                        }
                     }
                 }
 
