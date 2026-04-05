@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import AppKit
 import Combine
+import CoreAudio
 
 struct TrackMetadata {
     let title: String
@@ -37,6 +38,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isTrackLoaded = false
     @Published var isDownloadingCoverArt = false
     @Published var coverArtMessage: String = ""
+    /// Current output device sample rate, shown in the UI (e.g. "→ 44.1 kHz")
+    @Published var outputSampleRate: String = ""
+    /// True when the device rate doesn't exactly match the file rate (SRC is active)
+    @Published var isRateConverting: Bool = false
 
     func cycleArtwork() {
         guard artworkImages.count > 1 else { return }
@@ -87,11 +92,18 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var metadataCache: [URL: TrackMetadata] = [:]
     private var durationCache: [URL: TimeInterval] = [:]
 
-
     // Incremented on every loadTrack call so background loads from a
     // previous request are discarded when the user switches tracks quickly.
     private var loadGeneration = 0
     private let loadQueue = DispatchQueue(label: "com.audioplayer.load", qos: .userInitiated)
+
+    // Auto sample-rate switching: state for loads awaiting a device rate change.
+    private var pendingFile: AVAudioFile?
+    private var pendingURL: URL?
+    private var pendingAutoPlay: Bool = false
+    private var pendingGeneration: Int = 0
+    // Device rate before the first change — restored when the playlist is cleared or app quits.
+    private var originalOutputSampleRate: Double?
 
     override init() {
         // Load EQ settings from UserDefaults before super.init
@@ -128,11 +140,29 @@ class AudioPlayerManager: NSObject, ObservableObject {
         // Apply initial EQ settings
         updateEQ()
 
-        // When the audio output device changes (e.g. AirPlay device selected),
-        // AVAudioEngine stops itself. Restart playback at the current position
-        // so audio is routed to the newly selected device.
+        // AVAudioEngineConfigurationChange fires when the device rate changes (our
+        // own rate switch) or when the user plugs/unplugs a device, selects AirPlay, etc.
         audioEngine.onConfigurationChange = { [weak self] in
-            guard let self = self, self.isPlaying else { return }
+            guard let self = self else { return }
+
+            self.outputSampleRate = self.currentOutputSampleRateString()
+
+            // Complete a load that was paused waiting for a device rate change.
+            if let file = self.pendingFile,
+               self.pendingGeneration == self.loadGeneration {
+                let file = file
+                let url  = self.pendingURL
+                let play = self.pendingAutoPlay
+                let gen  = self.pendingGeneration
+                self.pendingFile    = nil
+                self.pendingURL     = nil
+                self.pendingAutoPlay = false
+                self.completePendingLoad(file: file, url: url, autoPlay: play, generation: gen)
+                return
+            }
+
+            // External device change while playing — restart at the current position.
+            guard self.isPlaying else { return }
             let position = self.currentTime
             do {
                 try self.audioEngine.prepareForPlayback()
@@ -458,33 +488,37 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, self.loadGeneration == generation else { return }
-                    do {
-                        self.audioEngine.setContent(file: audioFile)
-                        try self.audioEngine.prepareForPlayback()
-                        self.audioEngine.setVolume(Float(self.volume))
-                        self.updateEQ()
 
-                        let d = self.audioEngine.duration
-                        self.duration = d
-                        self.durationCache[url] = d
-                        self.currentTime = 0
-                        self.playbackStartPosition = 0
-                        self.isTrackLoaded = true
-
-                        if autoPlay {
-                            try self.audioEngine.resume()
-                            self.isPlaying = true
-                            self.playbackStartTime = Date()
+                    // Auto rate switching: check if the device needs a different sample rate.
+                    let fileSampleRate = audioFile.processingFormat.sampleRate
+                    if let targetRate = self.bestDeviceRate(for: fileSampleRate),
+                       abs(targetRate - self.currentOutputSampleRate()) > 1.0 {
+                        // Store the load and trigger the rate change. The engine config-change
+                        // notification fires when CoreAudio applies the new rate; our handler
+                        // calls completePendingLoad() to finish from there.
+                        self.pendingFile     = audioFile
+                        self.pendingURL      = url
+                        self.pendingAutoPlay = autoPlay
+                        self.pendingGeneration = generation
+                        self.applyOutputSampleRate(targetRate)
+                        // Safety fallback: if the notification never arrives (e.g. device
+                        // already at that rate due to a race), complete after 3 s.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                            guard let self = self,
+                                  self.pendingFile != nil,
+                                  self.pendingGeneration == generation else { return }
+                            let f = self.pendingFile!; let u = self.pendingURL
+                            let p = self.pendingAutoPlay; let g = self.pendingGeneration
+                            self.pendingFile = nil; self.pendingURL = nil
+                            self.completePendingLoad(file: f, url: u, autoPlay: p, generation: g)
                         }
-
-                        self.startTimer()
-                        self.preloadNextTrack(after: index)
-                    } catch {
-                        print("Error preparing playback: \(error.localizedDescription)")
-                        self.currentTrackName = "Error Loading Track"
-                        self.isTrackLoaded = false
-                        self.artworkImages = []
+                        return
                     }
+
+                    // No rate change needed — reflect the current device rate in the UI.
+                    self.outputSampleRate = self.currentOutputSampleRateString()
+                    self.completePendingLoad(file: audioFile, url: url,
+                                             autoPlay: autoPlay, generation: generation)
                 }
             } catch {
                 guard self.loadGeneration == generation else { return }
@@ -845,7 +879,160 @@ class AudioPlayerManager: NSObject, ObservableObject {
         loadTrack(at: index, autoPlay: wasPlaying)
     }
 
+    // MARK: - Load completion
+
+    /// Finish loading a track: set content, prepare engine, optionally start playback.
+    /// Called either directly (no rate change needed) or from onConfigurationChange
+    /// after the device sample rate has been applied.
+    private func completePendingLoad(file: AVAudioFile, url: URL?,
+                                     autoPlay: Bool, generation: Int) {
+        guard loadGeneration == generation else { return }
+        do {
+            // Update converting flag: true if file rate ≠ device rate.
+            let fileRate   = file.processingFormat.sampleRate
+            let deviceRate = currentOutputSampleRate()
+            isRateConverting = abs(fileRate - deviceRate) > 1.0
+
+            audioEngine.setContent(file: file)
+            try audioEngine.prepareForPlayback()
+            audioEngine.setVolume(Float(volume))
+            updateEQ()
+
+            let d = audioEngine.duration
+            duration = d
+            if let url = url { durationCache[url] = d }
+            currentTime = 0
+            playbackStartPosition = 0
+            isTrackLoaded = true
+
+            if autoPlay {
+                try audioEngine.resume()
+                isPlaying = true
+                playbackStartTime = Date()
+            }
+
+            startTimer()
+            if let url = url,
+               let idx = playlist.firstIndex(where: { $0.url == url }) {
+                preloadNextTrack(after: idx)
+            }
+        } catch {
+            print("Error preparing playback: \(error.localizedDescription)")
+            currentTrackName = "Error Loading Track"
+            isTrackLoaded = false
+            artworkImages = []
+        }
+    }
+
+    // MARK: - Auto sample-rate switching (CoreAudio)
+
+    /// Sample rates in both the 44.1 kHz and 48 kHz families.
+    private static let knownRates: [Double] =
+        [44100, 48000, 88200, 96000, 176400, 192000]
+
+    private func defaultOutputDeviceID() -> AudioDeviceID {
+        var id   = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope:    kAudioObjectPropertyScopeGlobal,
+            mElement:  kAudioObjectPropertyElementMain)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                   &addr, 0, nil, &size, &id)
+        return id
+    }
+
+    private func currentOutputSampleRate() -> Double {
+        var rate: Float64 = 44100
+        var size = UInt32(MemoryLayout<Float64>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope:    kAudioObjectPropertyScopeGlobal,
+            mElement:  kAudioObjectPropertyElementMain)
+        AudioObjectGetPropertyData(defaultOutputDeviceID(), &addr, 0, nil, &size, &rate)
+        return rate
+    }
+
+    private func currentOutputSampleRateString() -> String {
+        let r = currentOutputSampleRate()
+        let khz = r / 1000
+        return khz == khz.rounded() ? "→ \(Int(khz)) kHz" : String(format: "→ %.1f kHz", khz)
+    }
+
+    /// All discrete sample rates the default output device advertises.
+    private func supportedOutputSampleRates() -> [Double] {
+        let id = defaultOutputDeviceID()
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope:    kAudioObjectPropertyScopeGlobal,
+            mElement:  kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        let count = Int(size) / MemoryLayout<AudioValueRange>.size
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: count)
+        AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &ranges)
+
+        var rates = Set<Double>()
+        for range in ranges {
+            rates.insert(range.mMinimum)
+            if range.mMaximum > range.mMinimum {
+                // Range entry — include any well-known rates that fall within it.
+                for r in Self.knownRates where r >= range.mMinimum && r <= range.mMaximum {
+                    rates.insert(r)
+                }
+            }
+        }
+        return Array(rates).sorted()
+    }
+
+    /// Returns the best rate to set on the device for a given file sample rate:
+    /// 1. Exact match.
+    /// 2. Integer downsample within the same family (96 kHz file → 48 kHz device).
+    /// 3. Closest available rate (cross-family, SRC unavoidable).
+    /// Returns nil if the device reports no supported rates.
+    private func bestDeviceRate(for fileSampleRate: Double) -> Double? {
+        let supported = supportedOutputSampleRates()
+        guard !supported.isEmpty else { return nil }
+
+        // 1. Exact match — no conversion needed.
+        if supported.contains(fileSampleRate) { return fileSampleRate }
+
+        // 2. Walk down by 2× — stays within family (88.2→44.1, 96→48, 192→96→48 …).
+        var r = fileSampleRate / 2
+        while r >= 44100 {
+            if supported.contains(r) { return r }
+            r /= 2
+        }
+
+        // 3. Closest available rate — cross-family SRC is unavoidable.
+        return supported.min(by: { abs($0 - fileSampleRate) < abs($1 - fileSampleRate) })
+    }
+
+    /// Set the default output device to `rate` and save the original rate so it
+    /// can be restored when the playlist is cleared or the app quits.
+    private func applyOutputSampleRate(_ rate: Double) {
+        if originalOutputSampleRate == nil {
+            originalOutputSampleRate = currentOutputSampleRate()
+        }
+        var mutableRate = rate
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope:    kAudioObjectPropertyScopeGlobal,
+            mElement:  kAudioObjectPropertyElementMain)
+        AudioObjectSetPropertyData(defaultOutputDeviceID(), &addr, 0, nil,
+                                   UInt32(MemoryLayout<Float64>.size), &mutableRate)
+    }
+
+    private func restoreOriginalSampleRate() {
+        guard let rate = originalOutputSampleRate else { return }
+        originalOutputSampleRate = nil
+        applyOutputSampleRate(rate)
+        outputSampleRate = ""
+    }
+
     func clearPlaylist() {
+        restoreOriginalSampleRate()
         stopCurrentTrack()
         playlist.removeAll()
         metadataCache.removeAll()
@@ -937,6 +1124,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     deinit {
+        restoreOriginalSampleRate()
         stopTimer()
         trackGapTimer?.invalidate()
     }
