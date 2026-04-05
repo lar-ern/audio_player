@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Combine
 import Darwin
 import os.log
 
@@ -76,7 +77,7 @@ final class UPnPDiscovery: @unchecked Sendable {
                 localAddr.sin_addr.s_addr = INADDR_ANY
                 withUnsafeMutablePointer(to: &localAddr) {
                     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        _ = bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                     }
                 }
 
@@ -113,7 +114,7 @@ final class UPnPDiscovery: @unchecked Sendable {
                     let n = recv(sock, &buf, buf.count, 0)
                     guard n > 0 else { break }
                     let response = String(bytes: buf.prefix(n), encoding: .utf8) ?? ""
-                    if let url = extractLocation(from: response) {
+                    if let url = self.extractLocation(from: response) {
                         locations.append(url)
                     }
                 }
