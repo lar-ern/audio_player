@@ -533,7 +533,6 @@ enum UPnPError: Error, LocalizedError {
 
 // MARK: - UPnPOutputManager
 
-@MainActor
 final class UPnPOutputManager: ObservableObject {
 
     @Published var discoveredDevices: [UPnPDevice] = []
@@ -566,9 +565,11 @@ final class UPnPOutputManager: ObservableObject {
         guard !isDiscovering else { return }
         isDiscovering = true
         Task {
-            let devices = await discovery.discover(timeout: 3.0)
-            self.discoveredDevices = devices
-            self.isDiscovering = false
+            let devices = await self.discovery.discover(timeout: 3.0)
+            DispatchQueue.main.async { [weak self] in
+                self?.discoveredDevices = devices
+                self?.isDiscovering = false
+            }
         }
     }
 
@@ -619,7 +620,7 @@ final class UPnPOutputManager: ObservableObject {
 
         try await transport.setAVTransportURI(uri: trackURI, metadata: metadata)
         try await transport.play()
-        startPositionPolling()
+        DispatchQueue.main.async { [weak self] in self?.startPositionPolling() }
     }
 
     func resume() async throws {
@@ -635,7 +636,7 @@ final class UPnPOutputManager: ObservableObject {
     func stop() async throws {
         guard let transport = transport else { throw UPnPError.noDeviceSelected }
         try await transport.stop()
-        stopPositionPolling()
+        DispatchQueue.main.async { [weak self] in self?.stopPositionPolling() }
     }
 
     func seek(to seconds: TimeInterval) async throws {
@@ -660,7 +661,7 @@ final class UPnPOutputManager: ObservableObject {
         positionTimer = nil
     }
 
-    private func pollPosition() async {
+    @MainActor private func pollPosition() async {
         guard let transport = transport else { return }
         do {
             let info = try await transport.getPositionInfo()
