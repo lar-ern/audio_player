@@ -18,7 +18,6 @@ struct AudioPlayerApp: App {
     }
 }
 
-@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     let audioPlayer = AudioPlayerManager()
 
