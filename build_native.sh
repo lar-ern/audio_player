@@ -53,6 +53,7 @@ SOURCES=(
     "$SRC_DIR/AudioPlayerManager.swift"
     "$SRC_DIR/ContentView.swift"
     "$SRC_DIR/FLACDecoder.swift"
+    "$SRC_DIR/UPnPOutput.swift"
 )
 
 for f in "${SOURCES[@]}"; do
@@ -99,6 +100,9 @@ COMMON_FLAGS=(
     -framework AVFoundation
     -framework AppKit
     -framework Foundation
+    -framework Network
+    -framework CoreAudio
+    -framework AudioToolbox
     # NOTE: -disable-reflection-metadata was removed. SwiftUI 4.6.3 on macOS 13.7
     # uses reflection metadata in its AttributeGraph to inspect view types at
     # runtime. Stripping it caused _assertionFailure at SwiftUI+19950082 on startup.
@@ -120,6 +124,9 @@ if [ "$HOST_ARCH" != "x86_64" ]; then
         -framework AVFoundation
         -framework AppKit
         -framework Foundation
+        -framework Network
+        -framework CoreAudio
+        -framework AudioToolbox
         -o "$X86_BINARY"
     )
     "$SWIFT" "${X86_FLAGS[@]}" "${SOURCES[@]}"
