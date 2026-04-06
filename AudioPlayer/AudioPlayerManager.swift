@@ -16,6 +16,7 @@ struct PlaylistTrack {
     init(url: URL) { self.url = url }
 }
 
+@MainActor
 class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
