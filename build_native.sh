@@ -96,7 +96,6 @@ COMMON_FLAGS=(
     -target "$TARGET"
     -O
     -module-name AudioPlayer
-    -Xfrontend -default-isolation -Xfrontend MainActor
     -framework SwiftUI
     -framework AVFoundation
     -framework AppKit
@@ -121,7 +120,6 @@ if [ "$HOST_ARCH" != "x86_64" ]; then
         -target "x86_64-apple-macos13.0"
         -O
         -module-name AudioPlayer
-        -Xfrontend -default-isolation -Xfrontend MainActor
         -framework SwiftUI
         -framework AVFoundation
         -framework AppKit
