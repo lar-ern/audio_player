@@ -1189,17 +1189,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
         playbackStartTime = Date()
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            // Timer fires on the main run loop; assume main actor isolation
-            // to satisfy Sendable checking introduced by NonisolatedNonsendingByDefault.
-            MainActor.assumeIsolated {
-                if self.upnpManager.isActive {
-                    if self.isPlaying {
-                        self.currentTime = self.upnpManager.rendererPosition
-                    }
-                } else if self.isPlaying, let startTime = self.playbackStartTime {
-                    let elapsed = Date().timeIntervalSince(startTime)
-                    self.currentTime = min(self.playbackStartPosition + elapsed, self.duration)
+            if self.upnpManager.isActive {
+                if self.isPlaying {
+                    self.currentTime = self.upnpManager.rendererPosition
                 }
+            } else if self.isPlaying, let startTime = self.playbackStartTime {
+                let elapsed = Date().timeIntervalSince(startTime)
+                self.currentTime = min(self.playbackStartPosition + elapsed, self.duration)
             }
         }
     }
