@@ -1175,11 +1175,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 album: (album != nil && !album!.isEmpty) ? album! : dirFallback.album
             )
 
-            await MainActor.run {
-                self.metadataCache[url] = loaded
-                // Trigger UI refresh
-                self.objectWillChange.send()
-            }
+            // Task inherits @MainActor from getTrackMetadata; assign directly.
+            self.metadataCache[url] = loaded
+            self.objectWillChange.send()
         }
 
         return result
@@ -1207,8 +1205,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     deinit {
-        restoreOriginalSampleRate()
-        stopTimer()
+        // deinit is nonisolated even on @MainActor classes; invalidate timers
+        // directly (Timer.invalidate is safe to call from any context).
+        timer?.invalidate()
         trackGapTimer?.invalidate()
     }
 }
