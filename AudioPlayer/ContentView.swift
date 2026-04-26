@@ -216,6 +216,7 @@ struct PlaylistView: View {
 
 struct PlayerControlsView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
+    @EnvironmentObject var clock: PlaybackClock
     @State private var showVolumePopup    = false
     @State private var showEQPopup        = false
     @State private var showSettingsPopup  = false
@@ -369,14 +370,14 @@ struct PlayerControlsView: View {
 
             // Progress bar
             VStack(spacing: 8) {
-                Slider(value: $audioPlayer.currentTime, in: 0...max(audioPlayer.duration, 1.0)) { editing in
-                    if !editing { audioPlayer.seek(to: audioPlayer.currentTime) }
+                Slider(value: $clock.currentTime, in: 0...max(audioPlayer.duration, 1.0)) { editing in
+                    if !editing { audioPlayer.seek(to: clock.currentTime) }
                 }
                 .tint(Color(white: 0.50))
                 .disabled(!audioPlayer.isTrackLoaded)
 
                 HStack {
-                    Text(timeString(from: audioPlayer.currentTime))
+                    Text(timeString(from: clock.currentTime))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -950,7 +951,7 @@ final class ArtworkAppKitView: NSView {
             let newImage = images[i]
             guard newImage !== displayedImage else { return }  // same object — skip GPU upload
             displayedImage = newImage
-            imageLayer.contents    = newImage
+            imageLayer.contents    = newImage.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? newImage
             imageLayer.isHidden    = false
             gradientLayer.isHidden = true
             symbolView.isHidden    = true

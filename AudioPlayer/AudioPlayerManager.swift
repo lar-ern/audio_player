@@ -16,9 +16,19 @@ struct PlaylistTrack {
     init(url: URL) { self.url = url }
 }
 
+/// Holds only the playback position. Isolated from AudioPlayerManager so
+/// timer ticks don't invalidate the playlist, artwork, or controls.
+final class PlaybackClock: ObservableObject {
+    @Published var currentTime: Double = 0
+}
+
 class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
-    @Published var currentTime: Double = 0
+    let clock = PlaybackClock()
+    var currentTime: Double {
+        get { clock.currentTime }
+        set { clock.currentTime = newValue }
+    }
     @Published var duration: Double = 0
     @Published var volume: Double = 1.0 {
         didSet {
