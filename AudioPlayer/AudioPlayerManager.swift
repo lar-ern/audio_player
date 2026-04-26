@@ -92,6 +92,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var playbackStartPosition: Double = 0
     private var metadataCache: [URL: TrackMetadata] = [:]
     private var durationCache: [URL: TimeInterval] = [:]
+    private var pendingDurationURLs: Set<URL> = []
 
     // Incremented on every loadTrack call so background loads from a
     // previous request are discarded when the user switches tracks quickly.
@@ -1129,6 +1130,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         playlist.removeAll()
         metadataCache.removeAll()
         durationCache.removeAll()
+        pendingDurationURLs.removeAll()
         artworkImages = []
         currentArtworkIndex = 0
         currentTrackIndex = 0
@@ -1142,12 +1144,15 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
     func getTrackDuration(for url: URL) -> TimeInterval {
         if let cached = durationCache[url] { return cached }
-        // Not yet cached — read on a background thread and refresh the UI when done.
+        // Guard against spawning a new task on every re-render while the first is in flight.
+        if pendingDurationURLs.contains(url) { return 0 }
+        pendingDurationURLs.insert(url)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let file = try? AVAudioFile(forReading: url) else { return }
             let d = Double(file.length) / file.processingFormat.sampleRate
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                self.pendingDurationURLs.remove(url)
                 self.durationCache[url] = d
                 self.objectWillChange.send()
             }

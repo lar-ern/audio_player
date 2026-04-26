@@ -172,7 +172,7 @@ struct PlaylistView: View {
 
             let showList = sidePanel || isPlaylistExpanded
             ScrollView {
-                VStack(spacing: 2) {
+                LazyVStack(spacing: 2) {
                     if filteredPlaylist.isEmpty {
                         Text("No results for \"\(audioPlayer.searchText)\"")
                             .font(.caption)
@@ -194,7 +194,7 @@ struct PlaylistView: View {
                             )
                         }
                     }
-                }
+                }  // LazyVStack
             }
             .frame(maxHeight: showList ? 500 : 0)
             .opacity(showList ? 1 : 0)
