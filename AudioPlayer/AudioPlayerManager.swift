@@ -343,58 +343,71 @@ class AudioPlayerManager: NSObject, ObservableObject {
         let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let self = self else { return }
 
-            var seen = Set(self.playlist.map { $0.url.standardizedFileURL })
-            var newTracks: [PlaylistTrack] = []
-
-            for url in panel.urls {
-                let ext = url.pathExtension.lowercased()
-                var isDir: ObjCBool = false
-                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-
-                if isDir.boolValue {
-                    for fileURL in self.audioFilesInDirectory(url) {
-                        let key = fileURL.standardizedFileURL
-                        guard !seen.contains(key) else { continue }
-                        seen.insert(key)
-                        newTracks.append(PlaylistTrack(url: fileURL))
-                    }
-                } else if ext == "m3u" || ext == "m3u8" {
-                    for fileURL in self.parseM3U(at: url) {
-                        let key = fileURL.standardizedFileURL
-                        guard !seen.contains(key) else { continue }
-                        seen.insert(key)
-                        newTracks.append(PlaylistTrack(url: fileURL))
-                    }
-                } else if Self.audioExtensions.contains(ext) {
-                    let key = url.standardizedFileURL
-                    guard !seen.contains(key) else { continue }
-                    seen.insert(key)
-                    newTracks.append(PlaylistTrack(url: url))
-                }
-            }
-
-            let sortedTracks = newTracks.sorted {
-                $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
-            }
-
-            guard !sortedTracks.isEmpty else { return }
-
+            // Capture panel.urls on the main thread before hopping to background.
+            let panelURLs = panel.urls
+            let seenSnapshot = Set(self.playlist.map { $0.url.standardizedFileURL })
             let wasEmpty = self.playlist.isEmpty
-            self.playlist.append(contentsOf: sortedTracks)
 
-            for track in sortedTracks {
-                let url = track.url
-                guard self.durationCache[url] == nil else { continue }
-                DispatchQueue.global(qos: .utility).async { [weak self] in
-                    guard let file = try? AVAudioFile(forReading: url) else { return }
-                    let d = Double(file.length) / file.processingFormat.sampleRate
-                    DispatchQueue.main.async { self?.durationCache[url] = d }
+            // All file-system work (stat, directory enumeration, M3U read) runs on
+            // a background queue so the main thread stays responsive.
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+
+                var seen = seenSnapshot
+                var newTracks: [PlaylistTrack] = []
+
+                for url in panelURLs {
+                    let ext = url.pathExtension.lowercased()
+                    var isDir: ObjCBool = false
+                    FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+
+                    if isDir.boolValue {
+                        for fileURL in self.audioFilesInDirectory(url) {
+                            let key = fileURL.standardizedFileURL
+                            guard !seen.contains(key) else { continue }
+                            seen.insert(key)
+                            newTracks.append(PlaylistTrack(url: fileURL))
+                        }
+                    } else if ext == "m3u" || ext == "m3u8" {
+                        for fileURL in self.parseM3U(at: url) {
+                            let key = fileURL.standardizedFileURL
+                            guard !seen.contains(key) else { continue }
+                            seen.insert(key)
+                            newTracks.append(PlaylistTrack(url: fileURL))
+                        }
+                    } else if Self.audioExtensions.contains(ext) {
+                        let key = url.standardizedFileURL
+                        guard !seen.contains(key) else { continue }
+                        seen.insert(key)
+                        newTracks.append(PlaylistTrack(url: url))
+                    }
                 }
-            }
 
-            if wasEmpty {
-                self.currentTrackIndex = 0
-                self.loadTrack(at: 0)
+                let sortedTracks = newTracks.sorted {
+                    $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
+                }
+
+                guard !sortedTracks.isEmpty else { return }
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.playlist.append(contentsOf: sortedTracks)
+
+                    for track in sortedTracks {
+                        let url = track.url
+                        guard self.durationCache[url] == nil else { continue }
+                        DispatchQueue.global(qos: .utility).async { [weak self] in
+                            guard let file = try? AVAudioFile(forReading: url) else { return }
+                            let d = Double(file.length) / file.processingFormat.sampleRate
+                            DispatchQueue.main.async { self?.durationCache[url] = d }
+                        }
+                    }
+
+                    if wasEmpty {
+                        self.currentTrackIndex = 0
+                        self.loadTrack(at: 0)
+                    }
+                }
             }
         }
 
