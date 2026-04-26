@@ -194,11 +194,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
     }
 
     private func extractMetadata(from url: URL, generation: Int) {
-        let asset = AVURLAsset(url: url)
         let fallbackName = url.deletingPathExtension().lastPathComponent
 
         Task {
             do {
+                let asset = AVURLAsset(url: url)
                 let metadata = try await asset.load(.metadata)
 
                 let titleItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle)
@@ -1173,9 +1173,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         )
         metadataCache[url] = result
 
-        // Load async and update cache
-        let asset = AVURLAsset(url: url)
+        // Load async and update cache — AVURLAsset created inside Task to keep main thread free
         Task {
+            let asset = AVURLAsset(url: url)
             guard let metadata = try? await asset.load(.metadata) else { return }
 
             let titleItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle)
