@@ -180,9 +180,10 @@ struct PlaylistView: View {
                             .padding(.vertical, 8)
                             .frame(maxWidth: .infinity)
                     } else {
-                        ForEach(filteredPlaylist, id: \.index) { item in
-                            let prevIndex = filteredPlaylist.first(where: { $0.index == item.index - 1 })?.index
-                            let prevMeta = prevIndex.map { audioPlayer.getTrackMetadata(for: audioPlayer.playlist[$0]) }
+                        ForEach(Array(filteredPlaylist.enumerated()), id: \.element.index) { arrayIdx, item in
+                            let prevMeta = arrayIdx > 0
+                                ? audioPlayer.getTrackMetadata(for: filteredPlaylist[arrayIdx - 1].track)
+                                : nil
                             PlaylistItemView(
                                 track: item.track,
                                 index: item.index,
@@ -887,6 +888,7 @@ final class ArtworkAppKitView: NSView {
     private let gradientLayer = CAGradientLayer()
     private let imageLayer    = CALayer()
     private let symbolView    = NSImageView()
+    private var displayedImage: NSImage?   // identity guard — avoids redundant CA uploads
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -937,13 +939,18 @@ final class ArtworkAppKitView: NSView {
 
     func update(images: [NSImage], index: Int) {
         if images.isEmpty {
+            guard displayedImage != nil else { return }  // already showing placeholder
+            displayedImage = nil
             imageLayer.contents = nil
             imageLayer.isHidden = true
             gradientLayer.isHidden = false
             symbolView.isHidden    = false
         } else {
             let i = min(index, images.count - 1)
-            imageLayer.contents    = images[i]
+            let newImage = images[i]
+            guard newImage !== displayedImage else { return }  // same object — skip GPU upload
+            displayedImage = newImage
+            imageLayer.contents    = newImage
             imageLayer.isHidden    = false
             gradientLayer.isHidden = true
             symbolView.isHidden    = true
