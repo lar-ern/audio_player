@@ -54,33 +54,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleOpenFiles(_ urls: [URL]) {
-        var audioURLs: [URL] = []
+        // Run directory scanning on a background queue — recursive enumeration
+        // of a large music library can take seconds on spinning HDDs.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
 
-        for url in urls {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                // Recursively scan directory for audio files
-                audioURLs.append(contentsOf: audioFilesInDirectory(url))
-            } else if Self.audioExtensions.contains(url.pathExtension.lowercased()) {
-                audioURLs.append(url)
+            var audioURLs: [URL] = []
+            for url in urls {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    audioURLs.append(contentsOf: self.audioFilesInDirectory(url))
+                } else if Self.audioExtensions.contains(url.pathExtension.lowercased()) {
+                    audioURLs.append(url)
+                }
             }
-        }
 
-        // Sort by file path for natural album/track ordering
-        audioURLs.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+            audioURLs.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+            guard !audioURLs.isEmpty else { return }
 
-        guard !audioURLs.isEmpty else { return }
-
-        let wasEmpty = audioPlayer.playlist.isEmpty
-        audioPlayer.playlist.append(contentsOf: audioURLs.map { PlaylistTrack(url: $0) })
-
-        if wasEmpty {
-            audioPlayer.selectTrack(at: 0)
-        }
-
-        // Close any extra windows that may have been spawned
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.closeExtraWindows()
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                let wasEmpty = self.audioPlayer.playlist.isEmpty
+                self.audioPlayer.playlist.append(contentsOf: audioURLs.map { PlaylistTrack(url: $0) })
+                if wasEmpty { self.audioPlayer.selectTrack(at: 0) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    self.closeExtraWindows()
+                }
+            }
         }
     }
 
