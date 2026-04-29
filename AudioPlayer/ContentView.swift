@@ -407,6 +407,7 @@ struct PlayerControlsView: View {
                         .frame(width: 50, height: 50)
                 }
                 .buttonStyle(.plain)
+                .disabled(!audioPlayer.isTrackLoaded)
 
                 Button(action: audioPlayer.nextTrack) {
                     Image(systemName: "forward.fill")
