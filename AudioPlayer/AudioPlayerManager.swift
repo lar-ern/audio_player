@@ -22,6 +22,21 @@ final class PlaybackClock: ObservableObject {
     @Published var currentTime: Double = 0
 }
 
+/// Owns the reactive playlist state. Isolated so PlaylistView only
+/// re-renders when tracks/index/search/layout actually change — not on every
+/// isPlaying, artworkImages, duration, or timer tick.
+final class PlaylistStore: ObservableObject {
+    @Published var tracks: [PlaylistTrack] = []
+    @Published var currentIndex: Int = 0
+    @Published var searchText: String = ""
+    @Published var isWideLayout: Bool = true
+
+    // Non-reactive back-reference: PlaylistView calls manager methods
+    // (selectTrack, getTrackMetadata, etc.) without subscribing to the manager.
+    unowned let manager: AudioPlayerManager
+    init(manager: AudioPlayerManager) { self.manager = manager }
+}
+
 class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
     let clock = PlaybackClock()
@@ -58,14 +73,26 @@ class AudioPlayerManager: NSObject, ObservableObject {
         currentArtworkIndex = (currentArtworkIndex + 1) % artworkImages.count
     }
 
-    @Published var playlist: [PlaylistTrack] = []
-    @Published var currentTrackIndex: Int = 0
+    // Playlist state is owned by PlaylistStore so PlaylistView only re-renders
+    // when these four values change, not on every isPlaying / artworkImages / etc.
+    lazy var playlistStore: PlaylistStore = PlaylistStore(manager: self)
 
-    // UI state — stored here so views can access via @EnvironmentObject without
-    // @Binding, avoiding the SwiftUI 4.6.3 assertion on macOS 13.7 that fires
-    // when a view with @Binding properties has _ConditionalContent in its body.
-    @Published var searchText: String = ""
-    @Published var isWideLayout: Bool = true
+    var playlist: [PlaylistTrack] {
+        get { playlistStore.tracks }
+        set { playlistStore.tracks = newValue }
+    }
+    var currentTrackIndex: Int {
+        get { playlistStore.currentIndex }
+        set { playlistStore.currentIndex = newValue }
+    }
+    var searchText: String {
+        get { playlistStore.searchText }
+        set { playlistStore.searchText = newValue }
+    }
+    var isWideLayout: Bool {
+        get { playlistStore.isWideLayout }
+        set { playlistStore.isWideLayout = newValue }
+    }
 
     // EQ properties with UserDefaults persistence
     @Published var eqEnabled: Bool {
@@ -968,10 +995,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         if let url = url { durationCache[url] = d }
         currentTime = 0
         playbackStartPosition = 0
-        isTrackLoaded = true
-
         if upnpManager.isActive {
             // Route audio to UPnP renderer — skip local engine.
+            isTrackLoaded = true
             if autoPlay, let fileURL = url {
                 let title  = currentTrackName
                 let artist = currentArtist
@@ -999,32 +1025,51 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
 
         // Local audio engine path.
-        do {
-            // Update converting flag: true if file rate ≠ device rate.
-            let deviceRate = currentOutputSampleRate()
-            isRateConverting = abs(fileSampleRate - deviceRate) > 1.0
+        // setContent / setVolume / updateEQ are fast — no blocking I/O.
+        let deviceRate = currentOutputSampleRate()
+        isRateConverting = abs(fileSampleRate - deviceRate) > 1.0
+        audioEngine.setContent(file: file)
+        audioEngine.setVolume(Float(volume))
+        updateEQ()
 
-            audioEngine.setContent(file: file)
-            try audioEngine.prepareForPlayback()
-            audioEngine.setVolume(Float(volume))
-            updateEQ()
-
-            if autoPlay {
-                try audioEngine.resume()
-                isPlaying = true
-                playbackStartTime = Date()
+        // engine.prepare() + engine.start() block 30–100 ms on Intel Mac while
+        // CoreAudio HAL initialises. Dispatch to loadQueue so the main thread
+        // stays responsive; resume() and the isTrackLoaded flip run back on main.
+        loadQueue.async { [weak self] in
+            guard let self = self, self.loadGeneration == generation else { return }
+            do {
+                try self.audioEngine.prepareForPlayback()
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    print("Error preparing playback: \(error.localizedDescription)")
+                    self.currentTrackName = "Error Loading Track"
+                    self.isTrackLoaded = false
+                    self.artworkImages = []
+                }
+                return
             }
-
-            startTimer()
-            if let url = url,
-               let idx = playlist.firstIndex(where: { $0.url == url }) {
-                preloadNextTrack(after: idx)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.loadGeneration == generation else { return }
+                self.isTrackLoaded = true
+                do {
+                    if autoPlay {
+                        try self.audioEngine.resume()
+                        self.isPlaying = true
+                        self.playbackStartTime = Date()
+                    }
+                    self.startTimer()
+                    if let url = url,
+                       let idx = self.playlist.firstIndex(where: { $0.url == url }) {
+                        self.preloadNextTrack(after: idx)
+                    }
+                } catch {
+                    print("Error resuming: \(error.localizedDescription)")
+                    self.currentTrackName = "Error Loading Track"
+                    self.isTrackLoaded = false
+                    self.artworkImages = []
+                }
             }
-        } catch {
-            print("Error preparing playback: \(error.localizedDescription)")
-            currentTrackName = "Error Loading Track"
-            isTrackLoaded = false
-            artworkImages = []
         }
     }
 
