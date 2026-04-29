@@ -113,6 +113,22 @@ class AudioEngine {
         isPaused = false
     }
 
+    /// Eagerly starts the engine with a 44.1 kHz stereo format so the CoreAudio
+    /// HAL is fully initialised before the user loads the first track. Call from
+    /// loadQueue (background) — HAL init can take 30 ms–2 s on some devices.
+    func preStart() {
+        guard let engine = engine, let player = playerNode, let eq = eqNode else { return }
+        guard !engine.isRunning else { return }
+        guard let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2) else { return }
+        engine.disconnectNodeOutput(player)
+        engine.disconnectNodeOutput(eq)
+        engine.connect(player, to: eq, format: fmt)
+        engine.connect(eq, to: engine.mainMixerNode, format: fmt)
+        connectedFormat = fmt
+        engine.prepare()
+        try? engine.start()
+    }
+
     // MARK: - Content
 
     /// Store the file to play. AVAudioEngine will stream it from disk — no

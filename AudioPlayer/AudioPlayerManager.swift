@@ -224,6 +224,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 self.isPlaying = false
             }
         }
+
+        // Pre-warm the audio engine on the background load queue so CoreAudio HAL
+        // initialisation (30 ms–2 s depending on device) completes before the first
+        // track is loaded rather than blocking the user's first play action.
+        loadQueue.async { [weak self] in
+            self?.audioEngine.preStart()
+        }
     }
 
     private func updateEQ() {
