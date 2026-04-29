@@ -114,7 +114,9 @@ struct PlaylistView: View {
         }
     }
 
-    private var playlistContent: some View {
+    @ViewBuilder private var playlistContent: some View {
+        let items = filteredPlaylist   // compute once — filteredPlaylist is O(n) and was called
+                                       // 2 + visible-row-count times per render without this
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("Playlist")
@@ -173,16 +175,16 @@ struct PlaylistView: View {
             let showList = sidePanel || isPlaylistExpanded
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    if filteredPlaylist.isEmpty {
+                    if items.isEmpty {
                         Text("No results for \"\(audioPlayer.searchText)\"")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.vertical, 8)
                             .frame(maxWidth: .infinity)
                     } else {
-                        ForEach(Array(filteredPlaylist.enumerated()), id: \.element.index) { arrayIdx, item in
+                        ForEach(Array(items.enumerated()), id: \.element.index) { arrayIdx, item in
                             let prevMeta = arrayIdx > 0
-                                ? audioPlayer.getTrackMetadata(for: filteredPlaylist[arrayIdx - 1].track)
+                                ? audioPlayer.getTrackMetadata(for: items[arrayIdx - 1].track)
                                 : nil
                             PlaylistItemView(
                                 track: item.track,

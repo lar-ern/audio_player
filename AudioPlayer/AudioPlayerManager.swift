@@ -97,6 +97,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var audioEngine = AudioEngine()
     let upnpManager = UPnPOutputManager()
     private var timer: Timer?
+    private var metadataRefreshItem: DispatchWorkItem?
     private var trackGapTimer: Timer?
     private var playbackStartTime: Date?
     private var playbackStartPosition: Double = 0
@@ -1164,7 +1165,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 guard let self = self else { return }
                 self.pendingDurationURLs.remove(url)
                 self.durationCache[url] = d
-                self.objectWillChange.send()
+                self.scheduleMetadataRefresh()
             }
         }
         return 0
@@ -1202,12 +1203,21 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 album: (album != nil && !album!.isEmpty) ? album! : dirFallback.album
             )
 
-            // Task inherits @MainActor from getTrackMetadata; assign directly.
             self.metadataCache[url] = loaded
-            self.objectWillChange.send()
+            self.scheduleMetadataRefresh()
         }
 
         return result
+    }
+
+    /// Coalesces rapid-fire objectWillChange calls from metadata/duration Task
+    /// completions into a single publish after 120 ms of quiet. Without this,
+    /// 20+ visible uncached tracks each trigger a separate full re-render.
+    private func scheduleMetadataRefresh() {
+        metadataRefreshItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.objectWillChange.send() }
+        metadataRefreshItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
     }
 
     private func startTimer() {
