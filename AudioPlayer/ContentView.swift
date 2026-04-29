@@ -954,10 +954,19 @@ final class ArtworkAppKitView: NSView {
             let newImage = images[i]
             guard newImage !== displayedImage else { return }  // same object — skip GPU upload
             displayedImage = newImage
-            imageLayer.contents    = newImage.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? newImage
-            imageLayer.isHidden    = false
-            gradientLayer.isHidden = true
-            symbolView.isHidden    = true
+            // cgImage() decompresses JPEG/PNG on first call — can take 100–500 ms for
+            // large album art on Intel Mac. Offload to background; identity-check on
+            // return so a quickly-changing track doesn't show stale artwork.
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let cgImage = newImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, newImage === self.displayedImage else { return }
+                    self.imageLayer.contents    = cgImage ?? newImage
+                    self.imageLayer.isHidden    = false
+                    self.gradientLayer.isHidden = true
+                    self.symbolView.isHidden    = true
+                }
+            }
         }
     }
 }
