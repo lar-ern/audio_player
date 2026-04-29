@@ -9,6 +9,7 @@ struct AudioPlayerApp: App {
             ContentView()
                 .environmentObject(appDelegate.audioPlayer)
                 .environmentObject(appDelegate.audioPlayer.clock)
+                .environmentObject(appDelegate.audioPlayer.playlistStore)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)

@@ -13,10 +13,10 @@ struct ContentView: View {
 // which avoids the specific code path in SwiftUI 4.6.3 that fires the assertion when
 // the root Window content view body calls AnyView.init or _ConditionalContent.
 struct RootLayoutView: View {
-    @EnvironmentObject var audioPlayer: AudioPlayerManager
+    @EnvironmentObject var playlistStore: PlaylistStore
 
     var body: some View {
-        (audioPlayer.isWideLayout ? AnyView(WideLayoutView()) : AnyView(TallLayoutView()))
+        (playlistStore.isWideLayout ? AnyView(WideLayoutView()) : AnyView(TallLayoutView()))
             .background(Color(white: 0.10))
             .foregroundColor(Color(white: 0.85))
             .tint(Color(white: 0.50))
@@ -30,8 +30,6 @@ struct RootLayoutView: View {
 // @ViewBuilder closure evaluated in ContentView's type context on macOS 13.7.
 
 struct TallLayoutView: View {
-    @EnvironmentObject var audioPlayer: AudioPlayerManager
-
     var body: some View {
         VStack(spacing: 20) {
             PlayerControlsView()
@@ -46,8 +44,6 @@ struct TallLayoutView: View {
 // MARK: - Wide layout
 
 struct WideLayoutView: View {
-    @EnvironmentObject var audioPlayer: AudioPlayerManager
-
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 20) {
@@ -73,16 +69,19 @@ struct WideLayoutView: View {
 
 struct PlaylistView: View {
     let sidePanel: Bool
-    @EnvironmentObject var audioPlayer: AudioPlayerManager
+    // Observes only PlaylistStore — re-renders on tracks/index/search/layout
+    // changes, NOT on isPlaying, artworkImages, duration, or timer ticks.
+    @EnvironmentObject var playlistStore: PlaylistStore
     @State private var isPlaylistExpanded = true
 
     private var filteredPlaylist: [(index: Int, track: PlaylistTrack)] {
-        if audioPlayer.searchText.isEmpty {
-            return audioPlayer.playlist.enumerated().map { (index: $0.offset, track: $0.element) }
+        if playlistStore.searchText.isEmpty {
+            return playlistStore.tracks.enumerated().map { (index: $0.offset, track: $0.element) }
         }
-        let query = audioPlayer.searchText.lowercased()
-        return audioPlayer.playlist.enumerated().compactMap { offset, track in
-            let meta = audioPlayer.getTrackMetadata(for: track)
+        let query = playlistStore.searchText.lowercased()
+        let mgr = playlistStore.manager
+        return playlistStore.tracks.enumerated().compactMap { offset, track in
+            let meta = mgr.getTrackMetadata(for: track)
             if meta.title.lowercased().contains(query) ||
                meta.artist.lowercased().contains(query) ||
                meta.album.lowercased().contains(query) {
@@ -98,7 +97,7 @@ struct PlaylistView: View {
         // PlaylistView — _ConditionalContent<PlaylistView, EmptyView> in a parent
         // body with @Binding properties triggers the SwiftUI 4.6.3 assertion on
         // macOS 13.7 / Intel Mac (_assertionFailure at SwiftUI+19950082).
-        if audioPlayer.playlist.isEmpty {
+        if playlistStore.tracks.isEmpty {
             if sidePanel {
                 VStack {
                     Spacer()
@@ -115,8 +114,8 @@ struct PlaylistView: View {
     }
 
     @ViewBuilder private var playlistContent: some View {
-        let items = filteredPlaylist   // compute once — filteredPlaylist is O(n) and was called
-                                       // 2 + visible-row-count times per render without this
+        let items = filteredPlaylist   // compute once per render
+        let mgr = playlistStore.manager
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("Playlist")
@@ -127,11 +126,11 @@ struct PlaylistView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    TextField("Search", text: $audioPlayer.searchText)
+                    TextField("Search", text: $playlistStore.searchText)
                         .textFieldStyle(.plain)
                         .font(.caption)
-                    if !audioPlayer.searchText.isEmpty {
-                        Button(action: { audioPlayer.searchText = "" }) {
+                    if !playlistStore.searchText.isEmpty {
+                        Button(action: { playlistStore.searchText = "" }) {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
@@ -147,15 +146,15 @@ struct PlaylistView: View {
 
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        audioPlayer.isWideLayout.toggle()
+                        playlistStore.isWideLayout.toggle()
                     }
                 }) {
-                    Image(systemName: audioPlayer.isWideLayout ? "rectangle.split.1x2" : "rectangle.split.2x1")
+                    Image(systemName: playlistStore.isWideLayout ? "rectangle.split.1x2" : "rectangle.split.2x1")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(audioPlayer.isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
+                .help(playlistStore.isWideLayout ? "Switch to tall layout" : "Switch to wide layout")
 
                 if !sidePanel {
                     Button(action: {
@@ -176,7 +175,7 @@ struct PlaylistView: View {
             ScrollView {
                 LazyVStack(spacing: 2) {
                     if items.isEmpty {
-                        Text("No results for \"\(audioPlayer.searchText)\"")
+                        Text("No results for \"\(playlistStore.searchText)\"")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.vertical, 8)
@@ -184,16 +183,16 @@ struct PlaylistView: View {
                     } else {
                         ForEach(Array(items.enumerated()), id: \.element.index) { arrayIdx, item in
                             let prevMeta = arrayIdx > 0
-                                ? audioPlayer.getTrackMetadata(for: items[arrayIdx - 1].track)
+                                ? mgr.getTrackMetadata(for: items[arrayIdx - 1].track)
                                 : nil
                             PlaylistItemView(
                                 track: item.track,
                                 index: item.index,
-                                isCurrentTrack: item.index == audioPlayer.currentTrackIndex,
+                                isCurrentTrack: item.index == playlistStore.currentIndex,
                                 previousMetadata: prevMeta,
-                                onSelect: { audioPlayer.selectTrack(at: item.index) },
-                                onDoubleClick: { audioPlayer.startTrack(at: item.index) },
-                                audioPlayer: audioPlayer
+                                onSelect: { mgr.selectTrack(at: item.index) },
+                                onDoubleClick: { mgr.startTrack(at: item.index) },
+                                audioPlayer: mgr
                             )
                         }
                     }
@@ -219,6 +218,7 @@ struct PlaylistView: View {
 struct PlayerControlsView: View {
     @EnvironmentObject var audioPlayer: AudioPlayerManager
     @EnvironmentObject var clock: PlaybackClock
+    @EnvironmentObject var playlistStore: PlaylistStore
     @State private var showVolumePopup    = false
     @State private var showEQPopup        = false
     @State private var showSettingsPopup  = false
@@ -429,8 +429,8 @@ struct PlayerControlsView: View {
                 .background(Color(white: 0.25))
                 .foregroundColor(Color(white: 0.70))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .disabled(audioPlayer.playlist.isEmpty)
-                .opacity(audioPlayer.playlist.isEmpty ? 0.4 : 1.0)
+                .disabled(playlistStore.tracks.isEmpty)
+                .opacity(playlistStore.tracks.isEmpty ? 0.4 : 1.0)
 
                 Button("Load Audio File") {
                     audioPlayer.selectAudioFile()

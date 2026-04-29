@@ -22,6 +22,21 @@ final class PlaybackClock: ObservableObject {
     @Published var currentTime: Double = 0
 }
 
+/// Owns the reactive playlist state. Isolated so PlaylistView only
+/// re-renders when tracks/index/search/layout actually change — not on every
+/// isPlaying, artworkImages, duration, or timer tick.
+final class PlaylistStore: ObservableObject {
+    @Published var tracks: [PlaylistTrack] = []
+    @Published var currentIndex: Int = 0
+    @Published var searchText: String = ""
+    @Published var isWideLayout: Bool = true
+
+    // Non-reactive back-reference: PlaylistView calls manager methods
+    // (selectTrack, getTrackMetadata, etc.) without subscribing to the manager.
+    unowned let manager: AudioPlayerManager
+    init(manager: AudioPlayerManager) { self.manager = manager }
+}
+
 class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying = false
     let clock = PlaybackClock()
@@ -58,14 +73,26 @@ class AudioPlayerManager: NSObject, ObservableObject {
         currentArtworkIndex = (currentArtworkIndex + 1) % artworkImages.count
     }
 
-    @Published var playlist: [PlaylistTrack] = []
-    @Published var currentTrackIndex: Int = 0
+    // Playlist state is owned by PlaylistStore so PlaylistView only re-renders
+    // when these four values change, not on every isPlaying / artworkImages / etc.
+    lazy var playlistStore: PlaylistStore = PlaylistStore(manager: self)
 
-    // UI state — stored here so views can access via @EnvironmentObject without
-    // @Binding, avoiding the SwiftUI 4.6.3 assertion on macOS 13.7 that fires
-    // when a view with @Binding properties has _ConditionalContent in its body.
-    @Published var searchText: String = ""
-    @Published var isWideLayout: Bool = true
+    var playlist: [PlaylistTrack] {
+        get { playlistStore.tracks }
+        set { playlistStore.tracks = newValue }
+    }
+    var currentTrackIndex: Int {
+        get { playlistStore.currentIndex }
+        set { playlistStore.currentIndex = newValue }
+    }
+    var searchText: String {
+        get { playlistStore.searchText }
+        set { playlistStore.searchText = newValue }
+    }
+    var isWideLayout: Bool {
+        get { playlistStore.isWideLayout }
+        set { playlistStore.isWideLayout = newValue }
+    }
 
     // EQ properties with UserDefaults persistence
     @Published var eqEnabled: Bool {
