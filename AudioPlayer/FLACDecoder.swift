@@ -119,9 +119,13 @@ class AudioEngine {
     /// PCM buffer is allocated, so memory use is constant regardless of file size.
     func setContent(file: AVAudioFile) {
         audioFile = file
-        preloadQueue.sync {
-            preloadedFile = nil
-            preloadedURL  = nil
+        // Use async (not sync) to avoid blocking the main thread while a
+        // preloadFile() AVAudioFile open is in progress on this serial queue.
+        // The clear is still guaranteed to run before any subsequent preloadFile()
+        // because preloadQueue is serial and both are enqueued in order.
+        preloadQueue.async { [weak self] in
+            self?.preloadedFile = nil
+            self?.preloadedURL  = nil
         }
         isPaused = false
     }
