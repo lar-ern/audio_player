@@ -174,6 +174,10 @@ class AudioEngine {
         let graphChanged = (connectedFormat == nil || connectedFormat != newFormat)
 
         if graphChanged {
+            // macOS 13 / AVFAudio x86-64 raises an internal exception (abort) if
+            // connect() is called while the engine is running. Stop first, then
+            // reconnect; engine.start() below will restart it.
+            if engine.isRunning { engine.stop() }
             engine.disconnectNodeOutput(player)
             engine.disconnectNodeOutput(eq)
             engine.connect(player, to: eq, format: newFormat)
@@ -181,8 +185,6 @@ class AudioEngine {
             connectedFormat = newFormat
         }
 
-        // engine.prepare() pre-allocates buffers; only call when the graph changed
-        // or the engine hasn't started yet — skipping it on every load saves ~10ms.
         if graphChanged || !engine.isRunning {
             engine.prepare()
         }
