@@ -113,6 +113,18 @@ class AudioPlayerManager: NSObject, ObservableObject {
             updateEQ()
         }
     }
+    @Published var bassFrequency: Double {
+        didSet {
+            UserDefaults.standard.set(bassFrequency, forKey: "eqBassFrequency")
+            updateEQ()
+        }
+    }
+    @Published var trebleFrequency: Double {
+        didSet {
+            UserDefaults.standard.set(trebleFrequency, forKey: "eqTrebleFrequency")
+            updateEQ()
+        }
+    }
 
     // Gap duration between tracks (0 to 3 seconds)
     @Published var gapDuration: Double {
@@ -150,6 +162,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
         self.eqEnabled = UserDefaults.standard.bool(forKey: "eqEnabled")
         self.bassGain = UserDefaults.standard.double(forKey: "eqBassGain")
         self.trebleGain = UserDefaults.standard.double(forKey: "eqTrebleGain")
+        let savedBassFreq = UserDefaults.standard.double(forKey: "eqBassFrequency")
+        self.bassFrequency = savedBassFreq == 0 ? 100 : savedBassFreq
+        let savedTrebleFreq = UserDefaults.standard.double(forKey: "eqTrebleFrequency")
+        self.trebleFrequency = savedTrebleFreq == 0 ? 10000 : savedTrebleFreq
 
         // Load gap duration (default 2.0 seconds if not set)
         let savedGap = UserDefaults.standard.double(forKey: "gapDuration")
@@ -235,7 +251,27 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
     private func updateEQ() {
         audioEngine.setEQBypass(!eqEnabled)
-        audioEngine.setEQ(bassGain: Float(bassGain), trebleGain: Float(trebleGain))
+        audioEngine.setEQ(bassGain: Float(bassGain), trebleGain: Float(trebleGain),
+                          bassFrequency: Float(bassFrequency), trebleFrequency: Float(trebleFrequency))
+    }
+
+    func saveEQToDisk() {
+        guard !playlist.isEmpty else { return }
+        let idx = currentTrackIndex < playlist.count ? currentTrackIndex : 0
+        let dir = playlist[idx].url.deletingLastPathComponent()
+        let fileURL = dir.appendingPathComponent("eq_settings.txt")
+        let bassSign   = bassGain   >= 0 ? "+" : ""
+        let trebleSign = trebleGain >= 0 ? "+" : ""
+        func freqStr(_ hz: Double) -> String {
+            hz >= 1000 ? String(format: "%.0f kHz", hz / 1000) : String(format: "%.0f Hz", hz)
+        }
+        let content = """
+        AudioPlayer EQ Settings
+        Enabled: \(eqEnabled ? "Yes" : "No")
+        Bass:    \(bassSign)\(Int(bassGain)) dB @ \(freqStr(bassFrequency))
+        Treble:  \(trebleSign)\(Int(trebleGain)) dB @ \(freqStr(trebleFrequency))
+        """
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
     private func extractMetadata(from url: URL, generation: Int) {

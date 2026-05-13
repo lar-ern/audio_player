@@ -32,17 +32,19 @@ class AudioEngine {
     private func configureEQNode(_ eq: AVAudioUnitEQ,
                                   bassGain: Float = 0,
                                   trebleGain: Float = 0,
+                                  bassFrequency: Float = 100,
+                                  trebleFrequency: Float = 10000,
                                   bypass: Bool = true) {
         let bassBand = eq.bands[0]
         bassBand.filterType = .parametric
-        bassBand.frequency  = 100
+        bassBand.frequency  = bassFrequency
         bassBand.bandwidth  = 1.0
         bassBand.gain       = bassGain
         bassBand.bypass     = false
 
         let trebleBand = eq.bands[1]
         trebleBand.filterType = .parametric
-        trebleBand.frequency  = 10000
+        trebleBand.frequency  = trebleFrequency
         trebleBand.bandwidth  = 1.0
         trebleBand.gain       = trebleGain
         trebleBand.bypass     = false
@@ -82,9 +84,11 @@ class AudioEngine {
     }
 
     private func rebuildEngineAfterConfigChange() {
-        let bypass     = eqNode?.bypass        ?? true
-        let bassGain   = eqNode?.bands[0].gain ?? 0
-        let trebleGain = eqNode?.bands[1].gain ?? 0
+        let bypass       = eqNode?.bypass          ?? true
+        let bassGain     = eqNode?.bands[0].gain   ?? 0
+        let trebleGain   = eqNode?.bands[1].gain   ?? 0
+        let bassFreq     = eqNode?.bands[0].frequency ?? 100
+        let trebleFreq   = eqNode?.bands[1].frequency ?? 10000
 
         if let old = engine {
             NotificationCenter.default.removeObserver(
@@ -96,7 +100,8 @@ class AudioEngine {
         let newPlayer = AVAudioPlayerNode()
         let newEQ     = AVAudioUnitEQ(numberOfBands: 2)
 
-        configureEQNode(newEQ, bassGain: bassGain, trebleGain: trebleGain, bypass: bypass)
+        configureEQNode(newEQ, bassGain: bassGain, trebleGain: trebleGain,
+                        bassFrequency: bassFreq, trebleFrequency: trebleFreq, bypass: bypass)
         newEngine.attach(newPlayer)
         newEngine.attach(newEQ)
 
@@ -307,10 +312,12 @@ class AudioEngine {
         engine?.mainMixerNode.outputVolume = volume
     }
 
-    func setEQ(bassGain: Float, trebleGain: Float) {
+    func setEQ(bassGain: Float, trebleGain: Float, bassFrequency: Float, trebleFrequency: Float) {
         guard let eq = eqNode else { return }
-        eq.bands[0].gain = bassGain
-        eq.bands[1].gain = trebleGain
+        eq.bands[0].gain      = bassGain
+        eq.bands[0].frequency = bassFrequency
+        eq.bands[1].gain      = trebleGain
+        eq.bands[1].frequency = trebleFrequency
     }
 
     func setEQBypass(_ bypass: Bool) {
