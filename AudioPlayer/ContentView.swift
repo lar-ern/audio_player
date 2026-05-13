@@ -365,6 +365,24 @@ struct PlayerControlsView: View {
                     }
                 }
 
+                if audioPlayer.isRateConverting, audioPlayer.availableOutputRates.count > 1 {
+                    HStack(spacing: 4) {
+                        ForEach(audioPlayer.availableOutputRates, id: \.self) { rate in
+                            let isCurrent = abs(rate - audioPlayer.currentOutputSampleRateValue) < 1
+                            Button(action: { audioPlayer.setOutputRate(rate) }) {
+                                Text(rateLabel(rate))
+                                    .font(.system(size: 10, weight: isCurrent ? .semibold : .regular, design: .monospaced))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(RoundedRectangle(cornerRadius: 3)
+                                        .fill(isCurrent ? Color.orange.opacity(0.25) : Color.primary.opacity(0.07)))
+                                    .foregroundColor(isCurrent ? .orange : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
                 if !audioPlayer.copyright.isEmpty {
                     Text(audioPlayer.copyright)
                         .font(.caption2)
@@ -473,6 +491,11 @@ struct PlayerControlsView: View {
 
     private func timeString(from seconds: Double) -> String {
         String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
+    }
+
+    private func rateLabel(_ hz: Double) -> String {
+        let khz = hz / 1000
+        return khz == khz.rounded() ? "\(Int(khz))k" : String(format: "%.1fk", khz)
     }
 }
 
