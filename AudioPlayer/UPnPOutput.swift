@@ -52,25 +52,18 @@ final class UPnPDiscovery: @unchecked Sendable {
         return await withCheckedContinuation { continuation in
             let queue = DispatchQueue(label: "com.audioplayer.ssdp")
             queue.async {
+                var locationSet = Set<String>()
                 var locations: [URL] = []
 
-                // Create UDP socket
                 let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-                guard sock >= 0 else {
-                    continuation.resume(returning: [])
-                    return
-                }
+                guard sock >= 0 else { continuation.resume(returning: []); return }
                 defer { close(sock) }
 
-                // Allow reuse
                 var yes: Int32 = 1
-                setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+                setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes,
+                           socklen_t(MemoryLayout<Int32>.size))
 
-                // Set receive timeout
-                var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
-                setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-
-                // Bind to any local port
+                // Bind to INADDR_ANY so we receive responses on all interfaces.
                 var localAddr = sockaddr_in()
                 localAddr.sin_family = sa_family_t(AF_INET)
                 localAddr.sin_port = 0
@@ -81,46 +74,90 @@ final class UPnPDiscovery: @unchecked Sendable {
                     }
                 }
 
-                // Build M-SEARCH message
-                let mx = Int(timeout)
-                let msg = "M-SEARCH * HTTP/1.1\r\n" +
-                          "HOST: 239.255.255.250:1900\r\n" +
-                          "MAN: \"ssdp:discover\"\r\n" +
-                          "MX: \(mx)\r\n" +
-                          "ST: urn:schemas-upnp-org:service:AVTransport:1\r\n" +
-                          "\r\n"
-                let msgData = Array(msg.utf8)
-
-                // Multicast destination
                 var dest = sockaddr_in()
                 dest.sin_family = sa_family_t(AF_INET)
                 dest.sin_port = UInt16(1900).bigEndian
                 dest.sin_addr.s_addr = inet_addr("239.255.255.250")
 
-                // Send twice for reliability
-                for _ in 0..<2 {
-                    withUnsafeMutablePointer(to: &dest) {
-                        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { destPtr in
-                            _ = sendto(sock, msgData, msgData.count, 0, destPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                // Send M-SEARCH from every active network interface so devices on
+                // any subnet are reached. Apple's mDNS daemon does the same;
+                // binding to INADDR_ANY only receives on all interfaces but the OS
+                // picks one interface for the outgoing multicast.
+                let localIPs = self.allLocalIPv4Addresses()
+                let sendIPs  = localIPs.isEmpty ? ["0.0.0.0"] : localIPs
+                let mx       = max(2, Int(timeout) - 1)
+
+                for localIP in sendIPs {
+                    var mcastIface = in_addr()
+                    mcastIface.s_addr = localIP == "0.0.0.0" ? INADDR_ANY : inet_addr(localIP)
+                    setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &mcastIface,
+                               socklen_t(MemoryLayout<in_addr>.size))
+
+                    // Search for both the service type and the device type so that
+                    // renderers (e.g. Linn DSM) that only respond to MediaRenderer:1
+                    // are still found.
+                    for st in ["urn:schemas-upnp-org:service:AVTransport:1",
+                               "urn:schemas-upnp-org:device:MediaRenderer:1"] {
+                        let msg  = "M-SEARCH * HTTP/1.1\r\n" +
+                                   "HOST: 239.255.255.250:1900\r\n" +
+                                   "MAN: \"ssdp:discover\"\r\n" +
+                                   "MX: \(mx)\r\n" +
+                                   "ST: \(st)\r\n\r\n"
+                        let data = Array(msg.utf8)
+                        withUnsafeMutablePointer(to: &dest) {
+                            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                                _ = sendto(sock, data, data.count, 0, $0,
+                                           socklen_t(MemoryLayout<sockaddr_in>.size))
+                            }
                         }
+                        usleep(20_000) // 20 ms between sends
                     }
-                    usleep(100_000) // 100ms between sends
                 }
 
-                // Collect responses until timeout
+                // 500 ms recv timeout so the deadline loop can break promptly even
+                // when no further responses arrive.
+                var tv = timeval(tv_sec: 0, tv_usec: 500_000)
+                setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv,
+                           socklen_t(MemoryLayout<timeval>.size))
+
                 let deadline = Date().addingTimeInterval(timeout)
                 var buf = [UInt8](repeating: 0, count: 4096)
                 while Date() < deadline {
                     let n = recv(sock, &buf, buf.count, 0)
-                    guard n > 0 else { break }
+                    guard n > 0 else { continue }
                     let response = String(bytes: buf.prefix(n), encoding: .utf8) ?? ""
-                    if let url = self.extractLocation(from: response) {
+                    if let url = self.extractLocation(from: response),
+                       locationSet.insert(url.absoluteString).inserted {
                         locations.append(url)
                     }
                 }
                 continuation.resume(returning: locations)
             }
         }
+    }
+
+    private func allLocalIPv4Addresses() -> [String] {
+        var result: [String] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return result }
+        defer { freeifaddrs(ifaddr) }
+        var ptr = ifaddr
+        while let current = ptr {
+            let iface = current.pointee
+            if iface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
+               Int32(iface.ifa_flags) & IFF_LOOPBACK == 0,
+               Int32(iface.ifa_flags) & IFF_UP != 0 {
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(iface.ifa_addr,
+                               socklen_t(iface.ifa_addr.pointee.sa_len),
+                               &hostname, socklen_t(hostname.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    result.append(String(cString: hostname))
+                }
+            }
+            ptr = iface.ifa_next
+        }
+        return result
     }
 
     private func extractLocation(from response: String) -> URL? {
