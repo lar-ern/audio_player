@@ -676,7 +676,7 @@ struct EQBandControl: View {
 
     private func combinedLabel(_ g: Double, _ hz: Double) -> String {
         let gain = g > 0 ? "+\(Int(g))dB" : "\(Int(g))dB"
-        let freq = hz >= 1000 ? String(format: "%.0fkHz", hz / 1000) : String(format: "%.0fHz", hz)
+        let freq = hz >= 1000 ? String(format: "%.1fkHz", hz / 1000) : String(format: "%.0fHz", hz)
         return "\(gain)@\(freq)"
     }
 }
