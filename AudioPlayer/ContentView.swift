@@ -293,7 +293,10 @@ struct PlayerControlsView: View {
                     EQPopoverView(
                         eqEnabled: $audioPlayer.eqEnabled,
                         bassGain: $audioPlayer.bassGain,
-                        trebleGain: $audioPlayer.trebleGain
+                        trebleGain: $audioPlayer.trebleGain,
+                        bassFrequency: $audioPlayer.bassFrequency,
+                        trebleFrequency: $audioPlayer.trebleFrequency,
+                        onSave: { audioPlayer.saveEQToDisk() }
                     )
                 }
             }
@@ -562,62 +565,102 @@ struct EQPopoverView: View {
     @Binding var eqEnabled: Bool
     @Binding var bassGain: Double
     @Binding var trebleGain: Double
-
-    private let gainSteps: [Double] = [-6, -3, 0, 3, 6]
+    @Binding var bassFrequency: Double
+    @Binding var trebleFrequency: Double
+    var onSave: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Toggle("Tone Control", isOn: $eqEnabled)
                 .font(.caption)
                 .fontWeight(.semibold)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Bass (100 Hz)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                HStack(spacing: 4) {
-                    ForEach(gainSteps, id: \.self) { gain in
-                        Button(action: { bassGain = gain }) {
-                            Text(gainLabel(gain))
-                                .font(.caption2)
-                                .fontWeight(bassGain == gain ? .bold : .regular)
-                                .frame(width: 36, height: 24)
-                                .background(RoundedRectangle(cornerRadius: 4)
-                                    .fill(bassGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1)))
-                                .foregroundColor(bassGain == gain ? .white : .primary)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!eqEnabled)
-                    }
-                }
+            HStack(alignment: .top, spacing: 20) {
+                EQBandControl(label: "Bass",
+                              gain: $bassGain,
+                              frequency: $bassFrequency,
+                              freqStep: 1,
+                              enabled: eqEnabled)
+                EQBandControl(label: "Treble",
+                              gain: $trebleGain,
+                              frequency: $trebleFrequency,
+                              freqStep: 100,
+                              enabled: eqEnabled)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Treble (10 kHz)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                HStack(spacing: 4) {
-                    ForEach(gainSteps, id: \.self) { gain in
-                        Button(action: { trebleGain = gain }) {
-                            Text(gainLabel(gain))
-                                .font(.caption2)
-                                .fontWeight(trebleGain == gain ? .bold : .regular)
-                                .frame(width: 36, height: 24)
-                                .background(RoundedRectangle(cornerRadius: 4)
-                                    .fill(trebleGain == gain ? Color(white: 0.40) : Color.primary.opacity(0.1)))
-                                .foregroundColor(trebleGain == gain ? .white : .primary)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!eqEnabled)
-                    }
-                }
+            Button(action: onSave) {
+                Text("Save to Disk")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.bordered)
+            .disabled(eqEnabled == false)
         }
-        .padding(12)
+        .padding(14)
+        .frame(minWidth: 180)
+    }
+}
+
+struct EQBandControl: View {
+    let label: String
+    @Binding var gain: Double
+    @Binding var frequency: Double
+    let freqStep: Double
+    let enabled: Bool
+
+    private let minGain: Double = -10
+    private let maxGain: Double =  10
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+
+            // Up (dB +)
+            arrowBtn("chevron.up") { gain = min(maxGain, gain + 1) }
+
+            // Middle row: freq −, dB value, freq +
+            HStack(spacing: 3) {
+                arrowBtn("chevron.left")  { frequency = max(1, frequency - freqStep) }
+
+                Text(gainLabel(gain))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .frame(width: 48, height: 26)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.1)))
+                    .multilineTextAlignment(.center)
+
+                arrowBtn("chevron.right") { frequency = frequency + freqStep }
+            }
+
+            // Down (dB −)
+            arrowBtn("chevron.down") { gain = max(minGain, gain - 1) }
+
+            // Frequency readout
+            Text(freqLabel(frequency))
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .frame(minWidth: 60)
+        }
+        .disabled(!enabled)
     }
 
-    private func gainLabel(_ gain: Double) -> String {
-        gain > 0 ? "+\(Int(gain))" : "\(Int(gain))"
+    private func arrowBtn(_ name: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: name)
+                .font(.system(size: 10, weight: .medium))
+                .frame(width: 26, height: 20)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func gainLabel(_ g: Double) -> String {
+        g > 0 ? "+\(Int(g)) dB" : "\(Int(g)) dB"
+    }
+
+    private func freqLabel(_ hz: Double) -> String {
+        hz >= 1000 ? String(format: "%.0f kHz", hz / 1000) : String(format: "%.0f Hz", hz)
     }
 }
 
