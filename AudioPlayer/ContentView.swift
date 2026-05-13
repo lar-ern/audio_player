@@ -620,13 +620,14 @@ struct EQBandControl: View {
             // Up (dB +)
             arrowBtn("chevron.up") { gain = min(maxGain, gain + 1) }
 
-            // Middle row: freq −, dB value, freq +
+            // Middle row: freq −, combined dB@freq label, freq +
             HStack(spacing: 3) {
                 arrowBtn("chevron.left")  { frequency = max(1, frequency - freqStep) }
 
-                Text(gainLabel(gain))
+                Text(combinedLabel(gain, frequency))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .frame(width: 48, height: 26)
+                    .frame(minWidth: 90, height: 26)
+                    .padding(.horizontal, 4)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.1)))
                     .multilineTextAlignment(.center)
 
@@ -635,12 +636,6 @@ struct EQBandControl: View {
 
             // Down (dB −)
             arrowBtn("chevron.down") { gain = max(minGain, gain - 1) }
-
-            // Frequency readout
-            Text(freqLabel(frequency))
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .frame(minWidth: 60)
         }
         .disabled(!enabled)
     }
@@ -655,12 +650,10 @@ struct EQBandControl: View {
         .buttonStyle(.plain)
     }
 
-    private func gainLabel(_ g: Double) -> String {
-        g > 0 ? "+\(Int(g)) dB" : "\(Int(g)) dB"
-    }
-
-    private func freqLabel(_ hz: Double) -> String {
-        hz >= 1000 ? String(format: "%.0f kHz", hz / 1000) : String(format: "%.0f Hz", hz)
+    private func combinedLabel(_ g: Double, _ hz: Double) -> String {
+        let gain = g > 0 ? "+\(Int(g)) dB" : "\(Int(g)) dB"
+        let freq = hz >= 1000 ? String(format: "%.0f kHz", hz / 1000) : String(format: "%.0f Hz", hz)
+        return "\(gain)@\(freq)"
     }
 }
 
