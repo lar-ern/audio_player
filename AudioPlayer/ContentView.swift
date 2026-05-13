@@ -626,7 +626,8 @@ struct EQBandControl: View {
 
                 Text(combinedLabel(gain, frequency))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .frame(minWidth: 90, height: 26)
+                    .frame(minWidth: 90)
+                    .frame(height: 26)
                     .padding(.horizontal, 4)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.1)))
                     .multilineTextAlignment(.center)
