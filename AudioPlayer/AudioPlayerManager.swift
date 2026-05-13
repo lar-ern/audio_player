@@ -89,6 +89,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
         get { playlistStore.currentIndex }
         set { playlistStore.currentIndex = newValue }
     }
+    var currentAlbumDirectory: URL? {
+        guard currentTrackIndex < playlist.count else { return nil }
+        return playlist[currentTrackIndex].url.deletingLastPathComponent()
+    }
+    var currentArtistDirectory: URL? {
+        return currentAlbumDirectory?.deletingLastPathComponent()
+    }
     var searchText: String {
         get { playlistStore.searchText }
         set { playlistStore.searchText = newValue }

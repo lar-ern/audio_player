@@ -325,15 +325,31 @@ struct PlayerControlsView: View {
                     .fontWeight(.semibold)
                     .lineLimit(1)
 
-                Text(audioPlayer.currentArtist)
-                    .font(.subheadline)
-                    .foregroundColor(Color(white: 0.55))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(audioPlayer.currentArtist)
+                        .font(.subheadline)
+                        .foregroundColor(Color(white: 0.55))
+                        .lineLimit(1)
+                    if let dir = audioPlayer.currentArtistDirectory {
+                        Button(">") { NSWorkspace.shared.open(dir) }
+                            .buttonStyle(.plain)
+                            .font(.subheadline)
+                            .foregroundColor(Color(white: 0.40))
+                    }
+                }
 
-                Text(audioPlayer.currentAlbum)
-                    .font(.caption)
-                    .foregroundColor(Color(white: 0.50))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(audioPlayer.currentAlbum)
+                        .font(.caption)
+                        .foregroundColor(Color(white: 0.50))
+                        .lineLimit(1)
+                    if let dir = audioPlayer.currentAlbumDirectory {
+                        Button(">") { NSWorkspace.shared.open(dir) }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundColor(Color(white: 0.40))
+                    }
+                }
 
                 if !audioPlayer.sampleRate.isEmpty || !audioPlayer.bitDepth.isEmpty {
                     HStack(spacing: 8) {
