@@ -165,8 +165,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var pendingURL: URL?
     private var pendingAutoPlay: Bool = false
     private var pendingGeneration: Int = 0
-    // Set by setOutputRate() to override bestDeviceRate() for one load cycle.
-    private var manualOutputRate: Double? = nil
+    private var currentFileSampleRate: Double = 0
     // Device rate before the first change — restored when the playlist is cleared or app quits.
     private var originalOutputSampleRate: Double?
 
@@ -238,18 +237,25 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 return
             }
 
-            // External device change while playing — restart at the current position.
-            guard self.isPlaying else { return }
-            let position = self.currentTime
+            // Device rate change (user-selected or external) — reconnect engine
+            // and seek back to the current position without restarting the track.
+            guard self.isTrackLoaded else { return }
+            let position   = self.currentTime
+            let shouldPlay = self.isPlaying
             do {
                 try self.audioEngine.prepareForPlayback()
                 self.audioEngine.setVolume(Float(self.volume))
                 self.updateEQ()
-                try self.audioEngine.seek(to: position, forcePlay: true)
-                self.playbackStartTime = Date()
-                self.playbackStartPosition = position
+                try self.audioEngine.seek(to: position, forcePlay: shouldPlay)
+                if shouldPlay {
+                    self.playbackStartTime = Date()
+                    self.playbackStartPosition = position
+                }
+                let deviceRate = self.currentOutputSampleRate()
+                self.isRateConverting = abs(self.currentFileSampleRate - deviceRate) > 1.0
+                self.outputSampleRate  = self.currentOutputSampleRateString()
             } catch {
-                print("Audio route change: failed to resume — \(error.localizedDescription)")
+                print("Device rate change: failed to reconnect — \(error.localizedDescription)")
                 self.isPlaying = false
             }
         }
@@ -268,11 +274,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
                           bassFrequency: Float(bassFrequency), trebleFrequency: Float(trebleFrequency))
     }
 
-    /// Reload the current track at a user-chosen device sample rate.
+    /// Switch the output device to a different sample rate without restarting the track.
     func setOutputRate(_ rate: Double) {
-        guard isTrackLoaded, currentTrackIndex < playlist.count else { return }
-        manualOutputRate = rate
-        loadTrack(at: currentTrackIndex, autoPlay: isPlaying)
+        guard isTrackLoaded else { return }
+        applyOutputSampleRate(rate)
+        // onConfigurationChange fires after CoreAudio applies the rate;
+        // the handler reconnects the engine and seeks back to currentTime.
     }
 
     func saveEQToDisk() {
@@ -1090,6 +1097,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         // Local audio engine path.
         // setContent / setVolume / updateEQ are fast — no blocking I/O.
         let deviceRate = currentOutputSampleRate()
+        currentFileSampleRate = fileSampleRate
         isRateConverting = abs(fileSampleRate - deviceRate) > 1.0
         availableOutputRates = supportedOutputSampleRates().filter { $0 <= fileSampleRate + 1 }.sorted()
         audioEngine.setContent(file: file)
@@ -1206,12 +1214,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// 4. Closest available rate (SRC unavoidable).
     /// Returns nil if the device reports no supported rates.
     private func bestDeviceRate(for fileSampleRate: Double) -> Double? {
-        // Honor a rate the user manually selected.
-        if let manual = manualOutputRate {
-            manualOutputRate = nil
-            return manual
-        }
-
         let supported = supportedOutputSampleRates()
         guard !supported.isEmpty else { return nil }
 
