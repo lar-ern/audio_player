@@ -182,14 +182,12 @@ struct PlaylistView: View {
                             .frame(maxWidth: .infinity)
                     } else {
                         ForEach(Array(items.enumerated()), id: \.element.index) { arrayIdx, item in
-                            let prevMeta = arrayIdx > 0
-                                ? mgr.getTrackMetadata(for: items[arrayIdx - 1].track)
-                                : nil
+                            let prevTrack = arrayIdx > 0 ? items[arrayIdx - 1].track : nil
                             PlaylistItemView(
                                 track: item.track,
                                 index: item.index,
                                 isCurrentTrack: item.index == playlistStore.currentIndex,
-                                previousMetadata: prevMeta,
+                                previousTrack: prevTrack,
                                 onSelect: { mgr.selectTrack(at: item.index) },
                                 onDoubleClick: { mgr.startTrack(at: item.index) },
                                 audioPlayer: mgr
@@ -883,7 +881,7 @@ struct PlaylistItemView: View {
     let track: PlaylistTrack
     let index: Int
     let isCurrentTrack: Bool
-    let previousMetadata: TrackMetadata?
+    let previousTrack: PlaylistTrack?
     let onSelect: () -> Void
     let onDoubleClick: () -> Void
     let audioPlayer: AudioPlayerManager
@@ -891,9 +889,10 @@ struct PlaylistItemView: View {
     var body: some View {
         let metadata = audioPlayer.getTrackMetadata(for: track)
         let duration = audioPlayer.getTrackDuration(at: index)
-        let showFullInfo = previousMetadata == nil ||
-                           previousMetadata?.artist != metadata.artist ||
-                           previousMetadata?.album != metadata.album
+        // Compare directories rather than tag strings — immune to async metadata
+        // loading races where one track has loaded tags and the adjacent one has not.
+        let showFullInfo = previousTrack == nil ||
+            previousTrack!.url.deletingLastPathComponent() != track.url.deletingLastPathComponent()
 
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
