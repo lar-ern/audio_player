@@ -1181,10 +1181,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// Returns the best rate to set on the device for a given file sample rate:
     /// 1. Exact match.
     /// 2. Integer downsample within the same family (96 kHz file → 48 kHz device).
-    /// 3. Closest available rate (cross-family, SRC unavoidable).
+    /// 3. Integer-ratio cross-family (192 kHz → 48 kHz ÷4 beats 192→44.1 ÷4.35).
+    /// 4. Closest available rate (SRC unavoidable).
     /// Returns nil if the device reports no supported rates.
     private func bestDeviceRate(for fileSampleRate: Double) -> Double? {
-        let supported = supportedOutputSampleRates()
+        var supported = supportedOutputSampleRates()
         guard !supported.isEmpty else { return nil }
 
         // 1. Exact match — no conversion needed.
@@ -1197,7 +1198,32 @@ class AudioPlayerManager: NSObject, ObservableObject {
             r /= 2
         }
 
-        // 3. Closest available rate — cross-family SRC is unavoidable.
+        // Bluetooth devices often advertise only 44100 Hz even when the codec
+        // (AAC/aptX) actually runs at 48 kHz internally. Probe 48000 so that a
+        // 192/96 kHz file gets a clean integer-ratio conversion (÷4 or ÷2) instead
+        // of the non-integer 192→44.1 (÷4.35). Only inject it for the 48 kHz
+        // family — never for 44.1/88.2/176.4 kHz files.
+        let family48: [Double] = [48000, 96000, 192000]
+        if family48.contains(fileSampleRate), !supported.contains(48000) {
+            supported.append(48000)
+            supported.sort()
+            // Re-try step 2 now that 48000 is a candidate.
+            var r2 = fileSampleRate / 2
+            while r2 >= 44100 {
+                if supported.contains(r2) { return r2 }
+                r2 /= 2
+            }
+        }
+
+        // 3. Integer-ratio cross-family: prefer a rate where fileSampleRate/rate
+        //    is a whole number (e.g. 192 kHz → 48 kHz) over the merely closest rate.
+        let integerCandidates = supported.filter { candidate in
+            let ratio = fileSampleRate / candidate
+            return ratio >= 1 && ratio == ratio.rounded()
+        }
+        if let best = integerCandidates.max() { return best }
+
+        // 4. Closest available rate — non-integer SRC is unavoidable.
         return supported.min(by: { abs($0 - fileSampleRate) < abs($1 - fileSampleRate) })
     }
 
