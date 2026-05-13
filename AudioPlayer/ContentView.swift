@@ -325,15 +325,31 @@ struct PlayerControlsView: View {
                     .fontWeight(.semibold)
                     .lineLimit(1)
 
-                Text(audioPlayer.currentArtist)
-                    .font(.subheadline)
-                    .foregroundColor(Color(white: 0.55))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(audioPlayer.currentArtist)
+                        .font(.subheadline)
+                        .foregroundColor(Color(white: 0.55))
+                        .lineLimit(1)
+                    if let dir = audioPlayer.currentArtistDirectory {
+                        Button(">") { NSWorkspace.shared.open(dir) }
+                            .buttonStyle(.plain)
+                            .font(.subheadline)
+                            .foregroundColor(Color(white: 0.40))
+                    }
+                }
 
-                Text(audioPlayer.currentAlbum)
-                    .font(.caption)
-                    .foregroundColor(Color(white: 0.50))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(audioPlayer.currentAlbum)
+                        .font(.caption)
+                        .foregroundColor(Color(white: 0.50))
+                        .lineLimit(1)
+                    if let dir = audioPlayer.currentAlbumDirectory {
+                        Button(">") { NSWorkspace.shared.open(dir) }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundColor(Color(white: 0.40))
+                    }
+                }
 
                 if !audioPlayer.sampleRate.isEmpty || !audioPlayer.bitDepth.isEmpty {
                     HStack(spacing: 8) {
@@ -361,6 +377,24 @@ struct PlayerControlsView: View {
                             Text(audioPlayer.outputSampleRate)
                                 .font(.caption2)
                                 .foregroundColor(audioPlayer.isRateConverting ? .orange : .secondary)
+                        }
+                    }
+                }
+
+                if audioPlayer.isRateConverting, audioPlayer.availableOutputRates.count > 1 {
+                    HStack(spacing: 4) {
+                        ForEach(audioPlayer.availableOutputRates, id: \.self) { rate in
+                            let isCurrent = abs(rate - audioPlayer.currentOutputSampleRateValue) < 1
+                            Button(action: { audioPlayer.setOutputRate(rate) }) {
+                                Text(rateLabel(rate))
+                                    .font(.system(size: 10, weight: isCurrent ? .semibold : .regular, design: .monospaced))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(RoundedRectangle(cornerRadius: 3)
+                                        .fill(isCurrent ? Color.orange.opacity(0.25) : Color.primary.opacity(0.07)))
+                                    .foregroundColor(isCurrent ? .orange : .secondary)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -473,6 +507,11 @@ struct PlayerControlsView: View {
 
     private func timeString(from seconds: Double) -> String {
         String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
+    }
+
+    private func rateLabel(_ hz: Double) -> String {
+        let khz = hz / 1000
+        return khz == khz.rounded() ? "\(Int(khz))k" : String(format: "%.1fk", khz)
     }
 }
 
@@ -653,7 +692,7 @@ struct EQBandControl: View {
 
     private func combinedLabel(_ g: Double, _ hz: Double) -> String {
         let gain = g > 0 ? "+\(Int(g))dB" : "\(Int(g))dB"
-        let freq = hz >= 1000 ? String(format: "%.0fkHz", hz / 1000) : String(format: "%.0fHz", hz)
+        let freq = hz >= 1000 ? String(format: "%.1fkHz", hz / 1000) : String(format: "%.0fHz", hz)
         return "\(gain)@\(freq)"
     }
 }

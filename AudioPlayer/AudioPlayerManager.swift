@@ -67,6 +67,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var outputSampleRate: String = ""
     /// True when the device rate doesn't exactly match the file rate (SRC is active)
     @Published var isRateConverting: Bool = false
+    /// All device rates ≤ file rate the user can choose from (populated on track load).
+    @Published var availableOutputRates: [Double] = []
+    /// Raw numeric value of the current output device rate (for UI highlighting).
+    var currentOutputSampleRateValue: Double { currentOutputSampleRate() }
 
     func cycleArtwork() {
         guard artworkImages.count > 1 else { return }
@@ -84,6 +88,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
     var currentTrackIndex: Int {
         get { playlistStore.currentIndex }
         set { playlistStore.currentIndex = newValue }
+    }
+    var currentAlbumDirectory: URL? {
+        guard currentTrackIndex < playlist.count else { return nil }
+        return playlist[currentTrackIndex].url.deletingLastPathComponent()
+    }
+    var currentArtistDirectory: URL? {
+        return currentAlbumDirectory?.deletingLastPathComponent()
     }
     var searchText: String {
         get { playlistStore.searchText }
@@ -154,6 +165,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var pendingURL: URL?
     private var pendingAutoPlay: Bool = false
     private var pendingGeneration: Int = 0
+    // Set by setOutputRate() to override bestDeviceRate() for one load cycle.
+    private var manualOutputRate: Double? = nil
     // Device rate before the first change — restored when the playlist is cleared or app quits.
     private var originalOutputSampleRate: Double?
 
@@ -253,6 +266,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
         audioEngine.setEQBypass(!eqEnabled)
         audioEngine.setEQ(bassGain: Float(bassGain), trebleGain: Float(trebleGain),
                           bassFrequency: Float(bassFrequency), trebleFrequency: Float(trebleFrequency))
+    }
+
+    /// Reload the current track at a user-chosen device sample rate.
+    func setOutputRate(_ rate: Double) {
+        guard isTrackLoaded, currentTrackIndex < playlist.count else { return }
+        manualOutputRate = rate
+        loadTrack(at: currentTrackIndex, autoPlay: isPlaying)
     }
 
     func saveEQToDisk() {
@@ -1071,6 +1091,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         // setContent / setVolume / updateEQ are fast — no blocking I/O.
         let deviceRate = currentOutputSampleRate()
         isRateConverting = abs(fileSampleRate - deviceRate) > 1.0
+        availableOutputRates = supportedOutputSampleRates().filter { $0 <= fileSampleRate + 1 }.sorted()
         audioEngine.setContent(file: file)
         audioEngine.setVolume(Float(volume))
         updateEQ()
@@ -1185,7 +1206,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// 4. Closest available rate (SRC unavoidable).
     /// Returns nil if the device reports no supported rates.
     private func bestDeviceRate(for fileSampleRate: Double) -> Double? {
-        var supported = supportedOutputSampleRates()
+        // Honor a rate the user manually selected.
+        if let manual = manualOutputRate {
+            manualOutputRate = nil
+            return manual
+        }
+
+        let supported = supportedOutputSampleRates()
         guard !supported.isEmpty else { return nil }
 
         // 1. Exact match — no conversion needed.
@@ -1196,23 +1223,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
         while r >= 44100 {
             if supported.contains(r) { return r }
             r /= 2
-        }
-
-        // Bluetooth devices often advertise only 44100 Hz even when the codec
-        // (AAC/aptX) actually runs at 48 kHz internally. Probe 48000 so that a
-        // 192/96 kHz file gets a clean integer-ratio conversion (÷4 or ÷2) instead
-        // of the non-integer 192→44.1 (÷4.35). Only inject it for the 48 kHz
-        // family — never for 44.1/88.2/176.4 kHz files.
-        let family48: [Double] = [48000, 96000, 192000]
-        if family48.contains(fileSampleRate), !supported.contains(48000) {
-            supported.append(48000)
-            supported.sort()
-            // Re-try step 2 now that 48000 is a candidate.
-            var r2 = fileSampleRate / 2
-            while r2 >= 44100 {
-                if supported.contains(r2) { return r2 }
-                r2 /= 2
-            }
         }
 
         // 3. Integer-ratio cross-family: prefer a rate where fileSampleRate/rate
