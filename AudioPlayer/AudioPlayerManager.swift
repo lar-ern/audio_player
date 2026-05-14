@@ -1368,8 +1368,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 album: (album != nil && !album!.isEmpty) ? album! : dirFallback.album
             )
 
-            self.metadataCache[url] = loaded
-            self.scheduleMetadataRefresh()
+            await MainActor.run {
+                self.metadataCache[url] = loaded
+                self.scheduleMetadataRefresh()
+            }
         }
 
         return result
