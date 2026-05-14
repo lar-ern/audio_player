@@ -979,7 +979,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private func stopCurrentTrack() {
         trackGapTimer?.invalidate()
         trackGapTimer = nil
-        audioEngine.stop()
+        audioEngine.stopPlayer()
         if upnpManager.isActive {
             Task { try? await upnpManager.stop() }
         }
@@ -1316,6 +1316,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
         isTrackLoaded = false
         duration = 0
         currentTime = 0
+        // Re-warm the engine so HAL is ready for the next play without delay.
+        loadQueue.async { [weak self] in self?.audioEngine.preStart() }
     }
 
     func getTrackDuration(for url: URL) -> TimeInterval {
