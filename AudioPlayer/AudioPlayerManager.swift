@@ -280,7 +280,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// Deletes the artwork at `index` from disk (if it's a file) and removes it from the list.
     func deleteArtwork(at index: Int) {
         guard index < artworkImages.count else { return }
-        if let url = artworkImageURLs[safe: index] {
+        if let url = artworkImageURLs[safe: index] ?? nil {
             try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
         artworkImages.remove(at: index)
