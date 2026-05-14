@@ -63,6 +63,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isTrackLoaded = false
     @Published var isDownloadingCoverArt = false
     @Published var coverArtMessage: String = ""
+    @Published var coverArtSearchOverride: String = ""
     /// Current output device sample rate, shown in the UI (e.g. "→ 44.1 kHz")
     @Published var outputSampleRate: String = ""
     /// True when the device rate doesn't exactly match the file rate (SRC is active)
@@ -696,8 +697,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
     func downloadCoverArt() {
         guard isTrackLoaded,
               currentTrackIndex < playlist.count else { return }
-        let artist  = currentArtist
-        let album   = currentAlbum
+        let override = coverArtSearchOverride.trimmingCharacters(in: .whitespaces)
+        let artist  = override.isEmpty ? currentArtist : override
+        let album   = override.isEmpty ? currentAlbum  : ""
         let destDir = playlist[currentTrackIndex].url.deletingLastPathComponent()
 
         isDownloadingCoverArt = true
