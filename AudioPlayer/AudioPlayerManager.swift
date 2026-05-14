@@ -59,6 +59,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     // All artwork images for the current track: embedded first, then image
     // files found in the track's directory and its subdirectories.
     @Published var artworkImages: [NSImage] = []
+    @Published var artworkImageURLs: [URL?] = []   // nil = embedded; URL = file on disk
     @Published var currentArtworkIndex: Int = 0
     @Published var isTrackLoaded = false
     @Published var isDownloadingCoverArt = false
@@ -276,6 +277,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
                           bassFrequency: Float(bassFrequency), trebleFrequency: Float(trebleFrequency))
     }
 
+    /// Deletes the artwork at `index` from disk (if it's a file) and removes it from the list.
+    func deleteArtwork(at index: Int) {
+        guard index < artworkImages.count else { return }
+        if let url = artworkImageURLs[safe: index] {
+            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
+        artworkImages.remove(at: index)
+        artworkImageURLs.remove(at: index)
+        currentArtworkIndex = min(currentArtworkIndex, max(0, artworkImages.count - 1))
+    }
+
     /// Switch the output device to a different sample rate without restarting the track.
     func setOutputRate(_ rate: Double) {
         guard isTrackLoaded else { return }
@@ -356,6 +368,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                         // Embedded artwork goes first so it shows immediately.
                         // Directory images may be appended later by scanDirectoryArtworks.
                         self.artworkImages.insert(image, at: 0)
+                        self.artworkImageURLs.insert(nil, at: 0)  // nil = embedded, no file
                         self.currentArtworkIndex = 0
                     }
                 }
@@ -372,7 +385,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self, self.loadGeneration == generation else { return }
             let fm = FileManager.default
-            var found: [NSImage] = []
+            var found: [(NSImage, URL)] = []
 
             guard let contents = try? fm.contentsOfDirectory(
                 at: directory,
@@ -389,7 +402,6 @@ class AudioPlayerManager: NSObject, ObservableObject {
             for item in sorted {
                 let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
                 if isDir {
-                    // One level into subdirectories
                     if let sub = try? fm.contentsOfDirectory(
                         at: item, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
                     ) {
@@ -400,20 +412,21 @@ class AudioPlayerManager: NSObject, ObservableObject {
                         }) {
                             if Self.imageExtensions.contains(subItem.pathExtension.lowercased()),
                                let img = NSImage(contentsOf: subItem) {
-                                found.append(img)
+                                found.append((img, subItem))
                             }
                         }
                     }
                 } else if Self.imageExtensions.contains(item.pathExtension.lowercased()),
                           let img = NSImage(contentsOf: item) {
-                    found.append(img)
+                    found.append((img, item))
                 }
             }
 
             guard !found.isEmpty, self.loadGeneration == generation else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, self.loadGeneration == generation else { return }
-                self.artworkImages.append(contentsOf: found)
+                self.artworkImages.append(contentsOf: found.map(\.0))
+                self.artworkImageURLs.append(contentsOf: found.map { $0.1 })
             }
         }
     }
@@ -601,7 +614,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
         let newArtworkDir = url.deletingLastPathComponent()
         let sameAlbum = newArtworkDir == lastArtworkDirectory
         if !sameAlbum {
-            artworkImages = []
+            artworkImages = []; artworkImageURLs = []
+            artworkImageURLs = []
             currentArtworkIndex = 0
             lastArtworkDirectory = newArtworkDir
         }
@@ -667,7 +681,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     self?.currentTrackName = "Error Loading Track"
                     self?.isTrackLoaded = false
-                    self?.artworkImages = []
+                    self?.artworkImages = []; self?.artworkImageURLs = []
                 }
             }
         }
@@ -792,6 +806,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 if !finalImages.isEmpty {
                     for (image, _) in finalImages.sorted(by: { $0.1 > $1.1 }) {
                         self.artworkImages.insert(image, at: 0)
+                        self.artworkImageURLs.insert(nil, at: 0)
                     }
                     self.currentArtworkIndex = 0
                     var msg = "Saved \(finalImages.count) image\(finalImages.count == 1 ? "" : "s")"
@@ -970,7 +985,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
         stopTimer()
         isPlaying = false
-        artworkImages = []
+        artworkImages = []; artworkImageURLs = []
         currentArtworkIndex = 0
         lastArtworkDirectory = nil
         copyright = ""
@@ -1140,7 +1155,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     print("Error preparing playback: \(error.localizedDescription)")
                     self.currentTrackName = "Error Loading Track"
                     self.isTrackLoaded = false
-                    self.artworkImages = []
+                    self.artworkImages = []; self.artworkImageURLs = []
                 }
                 return
             }
@@ -1162,7 +1177,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     print("Error resuming: \(error.localizedDescription)")
                     self.currentTrackName = "Error Loading Track"
                     self.isTrackLoaded = false
-                    self.artworkImages = []
+                    self.artworkImages = []; self.artworkImageURLs = []
                 }
             }
         }
@@ -1291,7 +1306,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         metadataCache.removeAll()
         durationCache.removeAll()
         pendingDurationURLs.removeAll()
-        artworkImages = []
+        artworkImages = []; artworkImageURLs = []
         currentArtworkIndex = 0
         lastArtworkDirectory = nil
         currentTrackIndex = 0
@@ -1396,5 +1411,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
         // directly (Timer.invalidate is safe to call from any context).
         timer?.invalidate()
         trackGapTimer?.invalidate()
+    }
+}
+
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

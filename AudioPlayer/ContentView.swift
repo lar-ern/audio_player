@@ -574,6 +574,22 @@ struct LargeArtworkSheet: View {
                     Spacer()
                 }
 
+                Button(action: {
+                    let i = index
+                    if index >= audioPlayer.artworkImages.count - 1 {
+                        index = max(0, audioPlayer.artworkImages.count - 2)
+                    }
+                    audioPlayer.deleteArtwork(at: i)
+                    if audioPlayer.artworkImages.isEmpty { dismiss() }
+                }) {
+                    Image(systemName: "trash")
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(index >= audioPlayer.artworkImages.count ||
+                          audioPlayer.artworkImageURLs[safe: index] == nil)
+
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)
