@@ -762,7 +762,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
             }
 
             var bookletIndex = 0
-            var collectedImages: [(NSImage, Int)] = []
+            var collectedImages: [(NSImage, URL, Int)] = []
             var skippedCount  = 0
             var failedCount   = 0
 
@@ -790,7 +790,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 do {
                     try data.write(to: dest, options: .atomic)
                     if let image = NSImage(data: data) {
-                        collectedImages.append((image, priority))
+                        collectedImages.append((image, dest, priority))
                     }
                 } catch {
                     failedCount += 1
@@ -804,9 +804,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
             let finalDestPath = destDir.path
             await MainActor.run {
                 if !finalImages.isEmpty {
-                    for (image, _) in finalImages.sorted(by: { $0.1 > $1.1 }) {
+                    for (image, fileURL, _) in finalImages.sorted(by: { $0.2 > $1.2 }) {
                         self.artworkImages.insert(image, at: 0)
-                        self.artworkImageURLs.insert(nil, at: 0)
+                        self.artworkImageURLs.insert(fileURL, at: 0)
                     }
                     self.currentArtworkIndex = 0
                     var msg = "Saved \(finalImages.count) image\(finalImages.count == 1 ? "" : "s")"
