@@ -63,6 +63,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     @Published var isTrackLoaded = false
     @Published var isDownloadingCoverArt = false
     @Published var coverArtMessage: String = ""
+    @Published var coverArtSearchOverride: String = ""
     /// Current output device sample rate, shown in the UI (e.g. "→ 44.1 kHz")
     @Published var outputSampleRate: String = ""
     /// True when the device rate doesn't exactly match the file rate (SRC is active)
@@ -154,6 +155,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var metadataCache: [URL: TrackMetadata] = [:]
     private var durationCache: [URL: TimeInterval] = [:]
     private var pendingDurationURLs: Set<URL> = []
+    private var lastArtworkDirectory: URL? = nil
 
     // Incremented on every loadTrack call so background loads from a
     // previous request are discarded when the user switches tracks quickly.
@@ -301,7 +303,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         try? content.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
-    private func extractMetadata(from url: URL, generation: Int) {
+    private func extractMetadata(from url: URL, generation: Int, skipArtwork: Bool = false) {
         let fallbackName = url.deletingPathExtension().lastPathComponent
 
         Task {
@@ -348,7 +350,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     self.copyright = copyrightText ?? ""
                     self.sampleRate = finalSampleRate
                     self.bitDepth = finalBitDepth
-                    if let artworkData = artworkData, let image = NSImage(data: artworkData) {
+                    if !skipArtwork,
+                       let artworkData = artworkData,
+                       let image = NSImage(data: artworkData) {
                         // Embedded artwork goes first so it shows immediately.
                         // Directory images may be appended later by scanDirectoryArtworks.
                         self.artworkImages.insert(image, at: 0)
@@ -594,11 +598,18 @@ class AudioPlayerManager: NSObject, ObservableObject {
         copyright = ""
         sampleRate = ""
         bitDepth = ""
-        artworkImages = []
-        currentArtworkIndex = 0
+        let newArtworkDir = url.deletingLastPathComponent()
+        let sameAlbum = newArtworkDir == lastArtworkDirectory
+        if !sameAlbum {
+            artworkImages = []
+            currentArtworkIndex = 0
+            lastArtworkDirectory = newArtworkDir
+        }
 
-        extractMetadata(from: url, generation: generation)
-        scanDirectoryArtworks(for: url, generation: generation)
+        extractMetadata(from: url, generation: generation, skipArtwork: sameAlbum)
+        if !sameAlbum {
+            scanDirectoryArtworks(for: url, generation: generation)
+        }
 
         // Opening an AVAudioFile just reads the file header — no PCM decoding.
         // Keep it on a background queue to avoid any filesystem latency on main.
@@ -686,8 +697,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
     func downloadCoverArt() {
         guard isTrackLoaded,
               currentTrackIndex < playlist.count else { return }
-        let artist  = currentArtist
-        let album   = currentAlbum
+        let override = coverArtSearchOverride.trimmingCharacters(in: .whitespaces)
+        let artist  = override.isEmpty ? currentArtist : override
+        let album   = override.isEmpty ? currentAlbum  : ""
         let destDir = playlist[currentTrackIndex].url.deletingLastPathComponent()
 
         isDownloadingCoverArt = true
@@ -950,6 +962,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         isPlaying = false
         artworkImages = []
         currentArtworkIndex = 0
+        lastArtworkDirectory = nil
         copyright = ""
         sampleRate = ""
         bitDepth = ""
@@ -1270,6 +1283,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
         pendingDurationURLs.removeAll()
         artworkImages = []
         currentArtworkIndex = 0
+        lastArtworkDirectory = nil
         currentTrackIndex = 0
         currentTrackName = "No Track Loaded"
         currentArtist = "Unknown Artist"

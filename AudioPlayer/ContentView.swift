@@ -760,6 +760,20 @@ struct SettingsPopoverView: View {
                 .buttonStyle(.plain)
                 .disabled(!audioPlayer.isTrackLoaded || audioPlayer.isDownloadingCoverArt)
 
+                HStack(spacing: 4) {
+                    TextField("Search override…", text: $audioPlayer.coverArtSearchOverride)
+                        .font(.caption2)
+                        .textFieldStyle(.roundedBorder)
+                    if !audioPlayer.coverArtSearchOverride.isEmpty {
+                        Button(action: { audioPlayer.coverArtSearchOverride = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
                 if !audioPlayer.coverArtMessage.isEmpty {
                     Text(audioPlayer.coverArtMessage)
                         .font(.caption2)
