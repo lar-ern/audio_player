@@ -588,7 +588,7 @@ struct LargeArtworkSheet: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(index >= audioPlayer.artworkImages.count ||
-                          audioPlayer.artworkImageURLs[safe: index] == nil)
+                          (audioPlayer.artworkImageURLs[safe: index] ?? nil) == nil)
 
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill")
