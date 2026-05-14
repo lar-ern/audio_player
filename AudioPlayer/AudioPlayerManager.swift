@@ -698,8 +698,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
         guard isTrackLoaded,
               currentTrackIndex < playlist.count else { return }
         let override = coverArtSearchOverride.trimmingCharacters(in: .whitespaces)
-        let artist  = override.isEmpty ? currentArtist : override
-        let album   = override.isEmpty ? currentAlbum  : ""
+        // Override = search by release title only (no artist constraint).
+        let artist  = override.isEmpty ? currentArtist : ""
+        let album   = override.isEmpty ? currentAlbum  : override
         let destDir = playlist[currentTrackIndex].url.deletingLastPathComponent()
 
         isDownloadingCoverArt = true
@@ -828,6 +829,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     r.removeSubrange(range)
                 }
             }
+            // Colons confuse the Lucene field-separator parser even inside quotes
+            // on some MusicBrainz index versions — replace with a space.
+            r = r.replacingOccurrences(of: ":", with: " ")
             return r.trimmingCharacters(in: CharacterSet.whitespaces
                 .union(CharacterSet(charactersIn: "-–—")))
         }
@@ -848,10 +852,16 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// Returns up to 5 release MBIDs from MusicBrainz, sorted best-score first.
     private func searchMusicBrainzRelease(artist: String, album: String) async -> [String] {
         let clean = cleanForMusicBrainz(album: album, artist: artist)
+        let queryValue: String
+        switch (clean.artist.isEmpty, clean.album.isEmpty) {
+        case (false, false): queryValue = "artist:\"\(clean.artist)\" AND release:\"\(clean.album)\""
+        case (false, true):  queryValue = "artist:\"\(clean.artist)\""
+        case (true,  false): queryValue = "release:\"\(clean.album)\""
+        case (true,  true):  return []
+        }
         var comps = URLComponents(string: "https://musicbrainz.org/ws/2/release")!
         comps.queryItems = [
-            URLQueryItem(name: "query",
-                         value: "artist:\"\(clean.artist)\" AND release:\"\(clean.album)\""),
+            URLQueryItem(name: "query", value: queryValue),
             URLQueryItem(name: "fmt",   value: "json"),
             URLQueryItem(name: "limit", value: "5"),
         ]
@@ -868,7 +878,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
             .compactMap { r -> (String, Int)? in
                 guard let id    = r["id"]    as? String,
                       let score = r["score"] as? Int,
-                      score >= 70 else { return nil }
+                      score >= 50 else { return nil }
                 return (id, score)
             }
             .sorted { $0.1 > $1.1 }
