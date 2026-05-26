@@ -115,21 +115,28 @@ final class UPnPDiscovery: @unchecked Sendable {
                     }
                 }
 
-                // 500 ms recv timeout so the deadline loop can break promptly even
-                // when no further responses arrive.
-                var tv = timeval(tv_sec: 0, tv_usec: 500_000)
+                // 200 ms recv timeout — tight loop so we can detect silence quickly.
+                var tv = timeval(tv_sec: 0, tv_usec: 200_000)
                 setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv,
                            socklen_t(MemoryLayout<timeval>.size))
 
                 let deadline = Date().addingTimeInterval(timeout)
                 var buf = [UInt8](repeating: 0, count: 4096)
+                var lastResponseTime: Date? = nil
                 while Date() < deadline {
                     let n = recv(sock, &buf, buf.count, 0)
-                    guard n > 0 else { continue }
-                    let response = String(bytes: buf.prefix(n), encoding: .utf8) ?? ""
-                    if let url = self.extractLocation(from: response),
-                       locationSet.insert(url.absoluteString).inserted {
-                        continuation.yield(url)
+                    if n > 0 {
+                        let response = String(bytes: buf.prefix(n), encoding: .utf8) ?? ""
+                        if let url = self.extractLocation(from: response),
+                           locationSet.insert(url.absoluteString).inserted {
+                            continuation.yield(url)
+                        }
+                        lastResponseTime = Date()
+                    } else if let last = lastResponseTime,
+                              Date().timeIntervalSince(last) >= 0.6 {
+                        // 600 ms silence after the last response — all devices that
+                        // are going to answer have answered; no need to wait longer.
+                        break
                     }
                 }
                 continuation.finish()
@@ -621,6 +628,7 @@ final class UPnPOutputManager: ObservableObject {
     @Published var rendererDuration: TimeInterval = 0
     private(set) var lastPositionUpdateTime: Date = Date()
     private var pollInFlight: Bool = false
+    private var remotelyPlaying: Bool = false   // true once Play SOAP succeeded
 
     // Completion callback (mirrors AudioEngine)
     var onPlaybackFinished: (() -> Void)?
@@ -675,9 +683,10 @@ final class UPnPOutputManager: ObservableObject {
         guard let transport = transport else { throw UPnPError.noDeviceSelected }
         guard serverStarted else { throw UPnPError.serverNotRunning }
 
-        // Stop any current playback before loading a new URI; many renderers
-        // require a clean STOPPED state before accepting SetAVTransportURI.
-        try? await transport.stop()
+        // Only stop if we know the renderer is already playing — avoids a
+        // cold SOAP round-trip on first play when the renderer is idle.
+        if remotelyPlaying { try? await transport.stop() }
+        remotelyPlaying = false
 
         currentFileURL = fileURL
         currentTitle   = title
@@ -696,6 +705,7 @@ final class UPnPOutputManager: ObservableObject {
 
         try await transport.setAVTransportURI(uri: trackURI, metadata: metadata)
         try await transport.play()
+        remotelyPlaying = true
         DispatchQueue.main.async { [weak self] in self?.startPositionPolling() }
     }
 
@@ -711,6 +721,7 @@ final class UPnPOutputManager: ObservableObject {
 
     func stop() async throws {
         guard let transport = transport else { throw UPnPError.noDeviceSelected }
+        remotelyPlaying = false
         try await transport.stop()
         DispatchQueue.main.async { [weak self] in self?.stopPositionPolling() }
     }
