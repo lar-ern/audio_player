@@ -174,7 +174,15 @@ final class UPnPDiscovery: @unchecked Sendable {
     // MARK: - Device Description
 
     private func fetchDeviceDescription(location: URL) async -> UPnPDevice? {
-        guard let (data, _) = try? await session.data(from: location) else { return nil }
+        var request = URLRequest(url: location)
+        request.setValue("redsonic/1.0", forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await session.data(for: request) else { return nil }
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
+        guard statusCode == 200 else {
+            os_log("UPnP description fetch got HTTP %d for %{public}@", log: upnpLog, type: .error,
+                   statusCode, location.absoluteString)
+            return nil
+        }
         guard let xml = String(data: data, encoding: .utf8) else { return nil }
 
         guard let udn          = xmlValue(xml, tag: "UDN"),
@@ -185,14 +193,24 @@ final class UPnPDiscovery: @unchecked Sendable {
         // Find AVTransport service controlURL
         guard let controlPath = avTransportControlURL(from: xml) else { return nil }
 
-        // Resolve relative control URL against device description base URL
-        let base = location.deletingLastPathComponent()
+        // Resolve control URL per RFC 3986:
+        // - absolute URI (starts with http/https): use as-is
+        // - absolute path (starts with /): resolve against origin (scheme://host:port)
+        // - relative path: resolve against the directory containing the description
         let controlURL: URL
         if controlPath.hasPrefix("http") {
-            controlURL = URL(string: controlPath) ?? base.appendingPathComponent(controlPath)
+            controlURL = URL(string: controlPath) ?? location.deletingLastPathComponent().appendingPathComponent(controlPath)
+        } else if controlPath.hasPrefix("/") {
+            // Absolute path — must be resolved against origin, NOT deletingLastPathComponent,
+            // otherwise devices whose description lives under a sub-path (e.g. Aurender's
+            // /uuid-xxx/device.xml) would produce a doubled path like /uuid-xxx/uuid-xxx/ctl-...
+            let scheme = location.scheme ?? "http"
+            let host   = location.host ?? ""
+            let port   = location.port.map { ":\($0)" } ?? ""
+            controlURL = URL(string: "\(scheme)://\(host)\(port)\(controlPath)")
+                         ?? location.deletingLastPathComponent().appendingPathComponent(String(controlPath.dropFirst()))
         } else {
-            let stripped = controlPath.hasPrefix("/") ? String(controlPath.dropFirst()) : controlPath
-            controlURL = base.appendingPathComponent(stripped)
+            controlURL = location.deletingLastPathComponent().appendingPathComponent(controlPath)
         }
 
         return UPnPDevice(id: udn, name: friendlyName, location: location,
