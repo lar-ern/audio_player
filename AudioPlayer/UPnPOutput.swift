@@ -673,6 +673,10 @@ final class UPnPOutputManager: ObservableObject {
         guard let transport = transport else { throw UPnPError.noDeviceSelected }
         guard serverStarted else { throw UPnPError.serverNotRunning }
 
+        // Stop any current playback before loading a new URI; many renderers
+        // require a clean STOPPED state before accepting SetAVTransportURI.
+        try? await transport.stop()
+
         currentFileURL = fileURL
         currentTitle   = title
         currentArtist  = artist
@@ -718,6 +722,11 @@ final class UPnPOutputManager: ObservableObject {
 
     private func startPositionPolling() {
         stopPositionPolling()
+        // Reset position state so interpolation starts from zero, not from a
+        // stale timestamp that could be minutes old.
+        rendererPosition      = 0
+        rendererDuration      = 0
+        lastPositionUpdateTime = Date()
         positionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor [weak self] in
@@ -729,6 +738,7 @@ final class UPnPOutputManager: ObservableObject {
     private func stopPositionPolling() {
         positionTimer?.invalidate()
         positionTimer = nil
+        pollInFlight = false   // unblock any in-flight guard on next start
     }
 
     @MainActor private func pollPosition() async {
@@ -738,13 +748,18 @@ final class UPnPOutputManager: ObservableObject {
         defer { pollInFlight = false }
         do {
             let info = try await transport.getPositionInfo()
-            rendererPosition = info.position
-            lastPositionUpdateTime = Date()
+            if info.position > 0 || rendererPosition == 0 {
+                rendererPosition = info.position
+                lastPositionUpdateTime = Date()
+            }
             if info.duration > 0 { rendererDuration = info.duration }
 
-            // Detect natural end-of-track
-            if info.duration > 0 && info.position >= info.duration - 1.0 {
-                // Double-check transport state
+            // Detect natural end-of-track: check state whenever position is
+            // near the end OR whenever the renderer reports duration > 0 and
+            // position stalled at 0 after playback started.
+            let knownDuration = rendererDuration > 0 ? rendererDuration : 0
+            let nearEnd = knownDuration > 0 && info.position >= knownDuration - 2.0
+            if nearEnd {
                 let state = (try? await transport.getTransportInfo()) ?? ""
                 if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
                     stopPositionPolling()
