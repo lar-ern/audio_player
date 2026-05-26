@@ -1111,16 +1111,20 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 let title  = currentTrackName
                 let artist = currentArtist
                 let album  = currentAlbum
+                // Set playing state immediately so the UI responds at once;
+                // the SOAP calls happen in the background.
+                isPlaying = true
+                startTimer()
                 Task {
                     do {
                         try await self.upnpManager.play(fileURL: fileURL,
                                                         title: title,
                                                         artist: artist,
                                                         album: album)
-                        self.isPlaying = true
-                        self.startTimer()
                     } catch {
                         print("UPnP play failed: \(error.localizedDescription)")
+                        self.isPlaying = false
+                        self.stopTimer()
                     }
                 }
             } else {
