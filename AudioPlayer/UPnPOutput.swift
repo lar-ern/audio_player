@@ -30,38 +30,34 @@ final class UPnPDiscovery: @unchecked Sendable {
         session = URLSession(configuration: cfg)
     }
 
-    /// Send M-SEARCH and collect responses for `timeout` seconds.
-    /// Returns unique devices that advertise AVTransport.
-    func discover(timeout: TimeInterval = 3.0) async -> [UPnPDevice] {
-        let responses = await sendMSearch(timeout: timeout)
-        var seen = Set<String>()
-        var unique: [URL] = []
-        for loc in responses {
-            if seen.insert(loc.absoluteString).inserted { unique.append(loc) }
-        }
-        return await withTaskGroup(of: UPnPDevice?.self) { group in
-            for location in unique {
+    /// Discover UPnP renderers, yielding each device as soon as its description
+    /// is fetched rather than waiting for the full M-SEARCH window to close.
+    /// The caller receives progressive updates via the onFound callback.
+    func discover(timeout: TimeInterval = 2.0,
+                  onFound: @escaping (UPnPDevice) -> Void) async {
+        await withTaskGroup(of: UPnPDevice?.self) { group in
+            // Spawn a description-fetch task for each SSDP response as it arrives,
+            // overlapping network I/O instead of waiting for the full timeout first.
+            for await location in ssdpStream(timeout: timeout) {
                 group.addTask { await self.fetchDeviceDescription(location: location) }
             }
-            var devices: [UPnPDevice] = []
             for await device in group {
-                if let d = device { devices.append(d) }
+                if let d = device { onFound(d) }
             }
-            return devices
         }
     }
 
     // MARK: - SSDP
 
-    private func sendMSearch(timeout: TimeInterval) async -> [URL] {
-        return await withCheckedContinuation { continuation in
+    /// Streams unique LOCATION URLs as M-SEARCH responses arrive.
+    private func ssdpStream(timeout: TimeInterval) -> AsyncStream<URL> {
+        AsyncStream { continuation in
             let queue = DispatchQueue(label: "com.audioplayer.ssdp")
             queue.async {
                 var locationSet = Set<String>()
-                var locations: [URL] = []
 
                 let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-                guard sock >= 0 else { continuation.resume(returning: []); return }
+                guard sock >= 0 else { continuation.finish(); return }
                 defer { close(sock) }
 
                 var yes: Int32 = 1
@@ -133,10 +129,10 @@ final class UPnPDiscovery: @unchecked Sendable {
                     let response = String(bytes: buf.prefix(n), encoding: .utf8) ?? ""
                     if let url = self.extractLocation(from: response),
                        locationSet.insert(url.absoluteString).inserted {
-                        locations.append(url)
+                        continuation.yield(url)
                     }
                 }
-                continuation.resume(returning: locations)
+                continuation.finish()
             }
         }
     }
@@ -633,13 +629,19 @@ final class UPnPOutputManager: ObservableObject {
 
     func discover() {
         guard !isDiscovering else { return }
+        discoveredDevices = []
         isDiscovering = true
-        Task {
-            let devices = await self.discovery.discover(timeout: 3.0)
-            DispatchQueue.main.async { [weak self] in
-                self?.discoveredDevices = devices
-                self?.isDiscovering = false
+        Task { @MainActor in
+            await self.discovery.discover(timeout: 2.0) { [weak self] device in
+                guard let self = self else { return }
+                // Update the list on the main actor as each device is found.
+                DispatchQueue.main.async {
+                    if !self.discoveredDevices.contains(device) {
+                        self.discoveredDevices.append(device)
+                    }
+                }
             }
+            DispatchQueue.main.async { [weak self] in self?.isDiscovering = false }
         }
     }
 
