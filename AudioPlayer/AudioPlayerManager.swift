@@ -148,6 +148,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
     private var audioEngine = AudioEngine()
     let upnpManager = UPnPOutputManager()
+    private var cancellables = Set<AnyCancellable>()
     private var timer: Timer?
     private var metadataRefreshItem: DispatchWorkItem?
     private var trackGapTimer: Timer?
@@ -187,6 +188,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
         self.gapDuration = savedGap == 0 && !UserDefaults.standard.dictionaryRepresentation().keys.contains("gapDuration") ? 2.0 : savedGap
 
         super.init()
+
+        // Relay upnpManager's @Published changes through our own objectWillChange so
+        // any SwiftUI view that observes AudioPlayerManager updates when the UPnP
+        // manager's discovered devices, selection, or position change.
+        upnpManager.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         // Shared end-of-track handler used by both local engine and UPnP renderer.
         let handleFinished: (AudioPlayerManager) -> Void = { mgr in
