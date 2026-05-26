@@ -35,15 +35,20 @@ final class UPnPDiscovery: @unchecked Sendable {
     func discover(timeout: TimeInterval = 3.0) async -> [UPnPDevice] {
         let responses = await sendMSearch(timeout: timeout)
         var seen = Set<String>()
-        var devices: [UPnPDevice] = []
-
-        for location in responses {
-            guard seen.insert(location.absoluteString).inserted else { continue }
-            if let device = await fetchDeviceDescription(location: location) {
-                devices.append(device)
-            }
+        var unique: [URL] = []
+        for loc in responses {
+            if seen.insert(loc.absoluteString).inserted { unique.append(loc) }
         }
-        return devices
+        return await withTaskGroup(of: UPnPDevice?.self) { group in
+            for location in unique {
+                group.addTask { await self.fetchDeviceDescription(location: location) }
+            }
+            var devices: [UPnPDevice] = []
+            for await device in group {
+                if let d = device { devices.append(d) }
+            }
+            return devices
+        }
     }
 
     // MARK: - SSDP
@@ -302,21 +307,19 @@ final class LocalAudioServer: @unchecked Sendable {
               let fileHandle = try? FileHandle(forReadingFrom: fileURL),
               let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
         else {
-            send(conn: conn, status: "404 Not Found", headers: [:], body: Data())
+            let hdr = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            conn.send(content: hdr.data(using: .utf8)!, completion: .contentProcessed { _ in conn.cancel() })
             return
         }
-        defer { try? fileHandle.close() }
 
         let mime = mimeType(for: fileURL)
         var rangeStart: Int = 0
         var rangeEnd: Int = fileSize - 1
 
-        // Parse Range header
         if let rangeLine = request.components(separatedBy: "\r\n").first(where: {
             $0.lowercased().hasPrefix("range:")
         }) {
             let value = rangeLine.dropFirst("Range:".count).trimmingCharacters(in: .whitespaces)
-            // e.g. "bytes=0-" or "bytes=1024-2047"
             if value.lowercased().hasPrefix("bytes=") {
                 let spec = value.dropFirst("bytes=".count)
                 let parts = spec.components(separatedBy: "-")
@@ -327,32 +330,42 @@ final class LocalAudioServer: @unchecked Sendable {
             }
         }
 
-        let length = rangeEnd - rangeStart + 1
-        try? fileHandle.seek(toOffset: UInt64(rangeStart))
-        let body = fileHandle.readData(ofLength: length)
+        let totalLength = rangeEnd - rangeStart + 1
+        let isPartial   = rangeStart > 0 || rangeEnd < fileSize - 1
+        let status      = isPartial ? "206 Partial Content" : "200 OK"
 
-        let isPartial = rangeStart > 0 || rangeEnd < fileSize - 1
-        let status = isPartial ? "206 Partial Content" : "200 OK"
-        var headers: [String: String] = [
-            "Content-Type":   mime,
-            "Content-Length": "\(body.count)",
-            "Accept-Ranges":  "bytes",
-            "Connection":     "close",
-        ]
+        var hdr = "HTTP/1.1 \(status)\r\n"
+        hdr += "Content-Type: \(mime)\r\n"
+        hdr += "Content-Length: \(totalLength)\r\n"
+        hdr += "Accept-Ranges: bytes\r\n"
+        hdr += "Connection: close\r\n"
         if isPartial {
-            headers["Content-Range"] = "bytes \(rangeStart)-\(rangeEnd)/\(fileSize)"
+            hdr += "Content-Range: bytes \(rangeStart)-\(rangeEnd)/\(fileSize)\r\n"
         }
+        hdr += "\r\n"
 
-        send(conn: conn, status: status, headers: headers, body: body)
+        try? fileHandle.seek(toOffset: UInt64(rangeStart))
+
+        // Send headers first, then stream file in 64 KB chunks so the renderer
+        // starts buffering immediately without waiting for the entire file to be read.
+        conn.send(content: hdr.data(using: .utf8)!, completion: .contentProcessed { [weak self] error in
+            guard error == nil else { conn.cancel(); try? fileHandle.close(); return }
+            self?.streamChunks(conn: conn, fileHandle: fileHandle, remaining: totalLength)
+        })
     }
 
-    private func send(conn: NWConnection, status: String, headers: [String: String], body: Data) {
-        var headerLines = "HTTP/1.1 \(status)\r\n"
-        for (k, v) in headers { headerLines += "\(k): \(v)\r\n" }
-        headerLines += "\r\n"
-        var response = headerLines.data(using: .utf8)!
-        response.append(body)
-        conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+    private func streamChunks(conn: NWConnection, fileHandle: FileHandle, remaining: Int) {
+        guard remaining > 0 else { conn.cancel(); try? fileHandle.close(); return }
+        let chunk = fileHandle.readData(ofLength: min(65536, remaining))
+        guard !chunk.isEmpty else { conn.cancel(); try? fileHandle.close(); return }
+        let sent = chunk.count
+        conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
+            if error != nil {
+                conn.cancel(); try? fileHandle.close()
+            } else {
+                self?.streamChunks(conn: conn, fileHandle: fileHandle, remaining: remaining - sent)
+            }
+        })
     }
 
     private func mimeType(for url: URL) -> String {
@@ -409,7 +422,7 @@ final class UPnPAVTransport: @unchecked Sendable {
     init(controlURL: URL) {
         self.controlURL = controlURL
         let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 10
+        cfg.timeoutIntervalForRequest = 5
         session = URLSession(configuration: cfg)
     }
 
@@ -610,6 +623,8 @@ final class UPnPOutputManager: ObservableObject {
     private var positionTimer: Timer?
     @Published var rendererPosition: TimeInterval = 0
     @Published var rendererDuration: TimeInterval = 0
+    private(set) var lastPositionUpdateTime: Date = Date()
+    private var pollInFlight: Bool = false
 
     // Completion callback (mirrors AudioEngine)
     var onPlaybackFinished: (() -> Void)?
@@ -703,7 +718,7 @@ final class UPnPOutputManager: ObservableObject {
 
     private func startPositionPolling() {
         stopPositionPolling()
-        positionTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        positionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor [weak self] in
                 await self?.pollPosition()
@@ -718,9 +733,13 @@ final class UPnPOutputManager: ObservableObject {
 
     @MainActor private func pollPosition() async {
         guard let transport = transport else { return }
+        guard !pollInFlight else { return }
+        pollInFlight = true
+        defer { pollInFlight = false }
         do {
             let info = try await transport.getPositionInfo()
             rendererPosition = info.position
+            lastPositionUpdateTime = Date()
             if info.duration > 0 { rendererDuration = info.duration }
 
             // Detect natural end-of-track

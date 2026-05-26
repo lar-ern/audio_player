@@ -645,34 +645,33 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, self.loadGeneration == generation else { return }
 
-                    // Auto rate switching: check if the device needs a different sample rate.
                     let fileSampleRate = audioFile.processingFormat.sampleRate
-                    if let targetRate = self.bestDeviceRate(for: fileSampleRate),
-                       abs(targetRate - self.currentOutputSampleRate()) > 1.0 {
-                        // Store the load and trigger the rate change. The engine config-change
-                        // notification fires when CoreAudio applies the new rate; our handler
-                        // calls completePendingLoad() to finish from there.
-                        self.pendingFile     = audioFile
-                        self.pendingURL      = url
-                        self.pendingAutoPlay = autoPlay
-                        self.pendingGeneration = generation
-                        self.applyOutputSampleRate(targetRate)
-                        // Safety fallback: if the notification never arrives (e.g. device
-                        // already at that rate due to a race), complete after 3 s.
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                            guard let self = self,
-                                  self.pendingFile != nil,
-                                  self.pendingGeneration == generation else { return }
-                            let f = self.pendingFile!; let u = self.pendingURL
-                            let p = self.pendingAutoPlay; let g = self.pendingGeneration
-                            self.pendingFile = nil; self.pendingURL = nil
-                            self.completePendingLoad(file: f, url: u, autoPlay: p, generation: g)
+
+                    // Skip local device rate-switching entirely when streaming via UPnP.
+                    if !self.upnpManager.isActive {
+                        if let targetRate = self.bestDeviceRate(for: fileSampleRate),
+                           abs(targetRate - self.currentOutputSampleRate()) > 1.0 {
+                            self.pendingFile     = audioFile
+                            self.pendingURL      = url
+                            self.pendingAutoPlay = autoPlay
+                            self.pendingGeneration = generation
+                            self.applyOutputSampleRate(targetRate)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                                guard let self = self,
+                                      self.pendingFile != nil,
+                                      self.pendingGeneration == generation else { return }
+                                let f = self.pendingFile!; let u = self.pendingURL
+                                let p = self.pendingAutoPlay; let g = self.pendingGeneration
+                                self.pendingFile = nil; self.pendingURL = nil
+                                self.completePendingLoad(file: f, url: u, autoPlay: p, generation: g)
+                            }
+                            return
                         }
-                        return
+
+                        // No rate change needed — reflect the current device rate in the UI.
+                        self.outputSampleRate = self.currentOutputSampleRateString()
                     }
 
-                    // No rate change needed — reflect the current device rate in the UI.
-                    self.outputSampleRate = self.currentOutputSampleRateString()
                     self.completePendingLoad(file: audioFile, url: url,
                                              autoPlay: autoPlay, generation: generation)
                 }
@@ -1106,6 +1105,8 @@ class AudioPlayerManager: NSObject, ObservableObject {
         if upnpManager.isActive {
             // Route audio to UPnP renderer — skip local engine.
             isTrackLoaded = true
+            isRateConverting = false
+            availableOutputRates = []
             if autoPlay, let fileURL = url {
                 let title  = currentTrackName
                 let artist = currentArtist
@@ -1396,7 +1397,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
             guard let self = self else { return }
             if self.upnpManager.isActive {
                 if self.isPlaying {
-                    self.currentTime = self.upnpManager.rendererPosition
+                    // Interpolate between SOAP polls for smooth display.
+                    let elapsed = Date().timeIntervalSince(self.upnpManager.lastPositionUpdateTime)
+                    let interpolated = self.upnpManager.rendererPosition + elapsed
+                    self.currentTime = min(interpolated, self.duration)
                 }
             } else if self.isPlaying, let startTime = self.playbackStartTime {
                 let elapsed = Date().timeIntervalSince(startTime)
