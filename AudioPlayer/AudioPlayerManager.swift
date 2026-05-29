@@ -1413,14 +1413,21 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private func startTimer() {
         timer?.invalidate()
         playbackStartTime = Date()
+        if upnpManager.isActive && currentTime > 0 {
+            // Resuming from pause: re-anchor the UPnP position reference at the
+            // current display value. Without this, the elapsed time since the last
+            // SOAP poll (which includes the paused duration) would be added to the
+            // renderer position, showing a wildly wrong time after resume.
+            upnpManager.setPositionAnchor(currentTime)
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             if self.upnpManager.isActive {
-                if self.isPlaying && self.upnpManager.hasReceivedRealPosition {
+                if self.isPlaying {
                     // Interpolate between SOAP polls for smooth display.
-                    // Guard on hasReceivedRealPosition so we don't count up from 0
-                    // while the renderer is still buffering — that would cause the
-                    // display to overshoot and then jump backward on the first real reading.
+                    // lastPositionUpdateTime is re-anchored by startPositionPolling()
+                    // on fresh play and by setPositionAnchor() on resume, so elapsed
+                    // always reflects real playback time — not paused duration.
                     let elapsed = Date().timeIntervalSince(self.upnpManager.lastPositionUpdateTime)
                     let interpolated = self.upnpManager.rendererPosition + elapsed
                     self.currentTime = min(interpolated, self.duration)
