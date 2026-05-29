@@ -1003,23 +1003,31 @@ class AudioPlayerManager: NSObject, ObservableObject {
     func togglePlayPause() {
         if upnpManager.isActive {
             if isPlaying {
+                // Optimistic update — UI responds instantly; revert on SOAP failure.
+                isPlaying = false
+                stopTimer()
                 Task {
                     do {
                         try await upnpManager.pause()
-                        self.isPlaying = false
-                        self.stopTimer()
                     } catch {
-                        print("UPnP pause failed: \(error.localizedDescription)")
+                        DispatchQueue.main.async { [weak self] in
+                            self?.isPlaying = true
+                            self?.startTimer()
+                        }
                     }
                 }
             } else {
+                // Optimistic update — UI responds instantly; revert on SOAP failure.
+                isPlaying = true
+                startTimer()
                 Task {
                     do {
                         try await upnpManager.resume()
-                        self.isPlaying = true
-                        self.startTimer()
                     } catch {
-                        print("UPnP resume failed: \(error.localizedDescription)")
+                        DispatchQueue.main.async { [weak self] in
+                            self?.isPlaying = false
+                            self?.stopTimer()
+                        }
                     }
                 }
             }
@@ -1408,8 +1416,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             if self.upnpManager.isActive {
-                if self.isPlaying {
+                if self.isPlaying && self.upnpManager.hasReceivedRealPosition {
                     // Interpolate between SOAP polls for smooth display.
+                    // Guard on hasReceivedRealPosition so we don't count up from 0
+                    // while the renderer is still buffering — that would cause the
+                    // display to overshoot and then jump backward on the first real reading.
                     let elapsed = Date().timeIntervalSince(self.upnpManager.lastPositionUpdateTime)
                     let interpolated = self.upnpManager.rendererPosition + elapsed
                     self.currentTime = min(interpolated, self.duration)

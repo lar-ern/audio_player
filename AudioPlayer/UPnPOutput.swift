@@ -633,6 +633,7 @@ final class UPnPOutputManager: ObservableObject {
     @Published var rendererPosition: TimeInterval = 0
     @Published var rendererDuration: TimeInterval = 0
     private(set) var lastPositionUpdateTime: Date = Date()
+    private(set) var hasReceivedRealPosition: Bool = false
     private var pollInFlight: Bool = false
     private var remotelyPlaying: Bool = false   // true once Play SOAP succeeded
 
@@ -744,11 +745,14 @@ final class UPnPOutputManager: ObservableObject {
 
     private func startPositionPolling() {
         stopPositionPolling()
-        // Reset position state so interpolation starts from zero, not from a
-        // stale timestamp that could be minutes old.
-        rendererPosition      = 0
-        rendererDuration      = 0
-        lastPositionUpdateTime = Date()
+        // Reset position state. hasReceivedRealPosition is cleared so the
+        // interpolation timer holds at 0 until the renderer confirms it is
+        // actually playing — prevents the display from overshooting during
+        // buffering and jumping backward when the first real reading arrives.
+        rendererPosition       = 0
+        rendererDuration       = 0
+        hasReceivedRealPosition = false
+        lastPositionUpdateTime  = Date()
         positionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor [weak self] in
@@ -775,6 +779,7 @@ final class UPnPOutputManager: ObservableObject {
             // must not reset lastPositionUpdateTime, which would cause the
             // interpolated display to snap back to 0 every 2 s.
             if info.position > 0 {
+                hasReceivedRealPosition = true
                 rendererPosition = info.position
                 lastPositionUpdateTime = Date()
             }
