@@ -35,15 +35,21 @@ final class UPnPDiscovery: @unchecked Sendable {
     /// The caller receives progressive updates via the onFound callback.
     func discover(timeout: TimeInterval = 2.0,
                   onFound: @escaping (UPnPDevice) -> Void) async {
-        await withTaskGroup(of: UPnPDevice?.self) { group in
-            // Spawn a description-fetch task for each SSDP response as it arrives,
-            // overlapping network I/O instead of waiting for the full timeout first.
+        await withTaskGroup(of: Void.self) { group in
+            // Spawn a description-fetch task for each SSDP response as it arrives.
+            // onFound is called inside the task so it fires as soon as each fetch
+            // completes — overlapping with the still-running ssdpStream loop rather
+            // than waiting for all SSDP responses to be collected first.
             for await location in ssdpStream(timeout: timeout) {
-                group.addTask { await self.fetchDeviceDescription(location: location) }
+                group.addTask {
+                    if let device = await self.fetchDeviceDescription(location: location) {
+                        onFound(device)
+                    }
+                }
             }
-            for await device in group {
-                if let d = device { onFound(d) }
-            }
+            // Drain all child tasks before returning (withTaskGroup also does this
+            // implicitly, but being explicit avoids lint warnings).
+            for await _ in group {}
         }
     }
 
@@ -639,17 +645,20 @@ final class UPnPOutputManager: ObservableObject {
         guard !isDiscovering else { return }
         discoveredDevices = []
         isDiscovering = true
-        Task { @MainActor in
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
             await self.discovery.discover(timeout: 2.0) { [weak self] device in
                 guard let self = self else { return }
-                // Update the list on the main actor as each device is found.
-                DispatchQueue.main.async {
+                // onFound is called from a background task; hop to MainActor so
+                // @Published mutations fire objectWillChange on the right thread.
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
                     if !self.discoveredDevices.contains(device) {
                         self.discoveredDevices.append(device)
                     }
                 }
             }
-            DispatchQueue.main.async { [weak self] in self?.isDiscovering = false }
+            self.isDiscovering = false
         }
     }
 
@@ -761,7 +770,11 @@ final class UPnPOutputManager: ObservableObject {
         defer { pollInFlight = false }
         do {
             let info = try await transport.getPositionInfo()
-            if info.position > 0 || rendererPosition == 0 {
+            // Only advance the reference timestamp when the renderer reports a
+            // real position. A zero returned during buffering or track transition
+            // must not reset lastPositionUpdateTime, which would cause the
+            // interpolated display to snap back to 0 every 2 s.
+            if info.position > 0 {
                 rendererPosition = info.position
                 lastPositionUpdateTime = Date()
             }

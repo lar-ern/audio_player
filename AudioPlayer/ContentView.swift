@@ -379,7 +379,8 @@ struct PlayerControlsView: View {
                     }
                 }
 
-                if audioPlayer.isRateConverting, audioPlayer.availableOutputRates.count > 1 {
+                if !audioPlayer.upnpManager.isActive,
+                   audioPlayer.isRateConverting, audioPlayer.availableOutputRates.count > 1 {
                     HStack(spacing: 4) {
                         ForEach(audioPlayer.availableOutputRates, id: \.self) { rate in
                             let isCurrent = abs(rate - audioPlayer.currentOutputSampleRateValue) < 1
