@@ -1130,6 +1130,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 // Set playing state immediately so the UI responds at once;
                 // the SOAP calls happen in the background.
                 isPlaying = true
+                upnpManager.trackDuration = d  // used as fallback for end-of-track detection
                 startTimer()
                 Task {
                     do {
