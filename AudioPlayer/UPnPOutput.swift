@@ -639,6 +639,10 @@ final class UPnPOutputManager: ObservableObject {
     private(set) var lastPositionUpdateTime: Date = Date()
     private var pollInFlight: Bool = false
     private var remotelyPlaying: Bool = false   // true once Play SOAP succeeded
+    // File duration and polling start time used as fallback end-of-track detection
+    // when the renderer doesn't report position/duration via GetPositionInfo.
+    var trackDuration: TimeInterval = 0
+    private var pollingStartedAt: Date = Date()
 
     // Completion callback (mirrors AudioEngine)
     var onPlaybackFinished: (() -> Void)?
@@ -759,6 +763,7 @@ final class UPnPOutputManager: ObservableObject {
         stopPositionPolling()
         rendererPosition      = 0
         rendererDuration      = 0
+        pollingStartedAt      = Date()
         lastPositionUpdateTime = Date()
         positionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -791,11 +796,16 @@ final class UPnPOutputManager: ObservableObject {
             }
             if info.duration > 0 { rendererDuration = info.duration }
 
-            // Detect natural end-of-track: check state whenever position is
-            // near the end OR whenever the renderer reports duration > 0 and
-            // position stalled at 0 after playback started.
-            let knownDuration = rendererDuration > 0 ? rendererDuration : 0
-            let nearEnd = knownDuration > 0 && info.position >= knownDuration - 2.0
+            // Detect natural end-of-track.
+            // Primary: use SOAP-reported position and duration when available.
+            // Fallback: if the renderer doesn't report position (returns 0), use
+            // elapsed time since polling started vs the file duration passed in
+            // from AudioPlayerManager. This handles renderers like the Aurender
+            // ACS-100 that always return RelTime/AbsTime = 0:00:00.
+            let effectiveDuration = rendererDuration > 0 ? rendererDuration : trackDuration
+            let elapsed = Date().timeIntervalSince(pollingStartedAt)
+            let effectivePosition = info.position > 0 ? info.position : elapsed
+            let nearEnd = effectiveDuration > 0 && effectivePosition >= effectiveDuration - 4.0
             if nearEnd {
                 let state = (try? await transport.getTransportInfo()) ?? ""
                 if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
