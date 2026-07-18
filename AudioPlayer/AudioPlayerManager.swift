@@ -1483,17 +1483,18 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     let rate = file.processingFormat.sampleRate
                     if rate > 0 { d = Double(file.length) / rate }
                 } catch {
-                    print("Duration read failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                    print("[dur] FAILED \(url.lastPathComponent): \(error.localizedDescription)")
                 }
             }
             worker.start()
             let result: TimeInterval
             if done.wait(timeout: .now() + 10) == .success {
                 result = d
+                print("[dur] ok: \(url.lastPathComponent) -> \(Int(d))s")
             } else {
                 // Abandon the hung thread and move on to the next file.
                 result = 0
-                print("Duration read TIMED OUT for \(url.lastPathComponent) — skipping")
+                print("[dur] TIMED OUT \(url.lastPathComponent) — skipping")
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -1527,8 +1528,21 @@ class AudioPlayerManager: NSObject, ObservableObject {
         metadataLoadChain = Task {
             await previous?.value
 
+            print("[meta] loading \(url.lastPathComponent)")
             let asset = AVURLAsset(url: url)
-            guard let metadata = try? await asset.load(.metadata) else { return }
+            // Timeout guard: asset.load is cancellable, and one hung load must
+            // not dam the serial chain for every track behind it.
+            let loadTask = Task { try? await asset.load(.metadata) }
+            let watchdog = Task {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                loadTask.cancel()
+            }
+            let loadedMetadata = await loadTask.value
+            watchdog.cancel()
+            guard let metadata = loadedMetadata else {
+                print("[meta] FAILED or timed out: \(url.lastPathComponent)")
+                return
+            }
 
             let titleItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle)
             let artistItems = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtist)
@@ -1544,6 +1558,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 album: (album != nil && !album!.isEmpty) ? album! : dirFallback.album
             )
 
+            print("[meta] ok: \(url.lastPathComponent) -> \(loaded.title)")
             await MainActor.run {
                 self.metadataCache[url] = loaded
                 self.scheduleMetadataRefresh()
@@ -1559,6 +1574,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private func scheduleMetadataRefresh() {
         metadataRefreshItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
+            print("[refresh] repainting playlist")
             self?.objectWillChange.send()
             // PlaylistView observes only PlaylistStore (deliberate isolation from
             // timer ticks etc.), so the store must also be pinged or freshly
