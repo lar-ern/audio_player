@@ -177,6 +177,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
     // previous request are discarded when the user switches tracks quickly.
     private var loadGeneration = 0
     private let loadQueue = DispatchQueue(label: "com.audioplayer.load", qos: .userInitiated)
+    // Serial queue for background duration reads. One at a time — opening a
+    // whole album's files concurrently on the global pool caused contention
+    // with the playback load path and made individual opens fail silently.
+    private let durationQueue = DispatchQueue(label: "com.audioplayer.duration", qos: .utility)
 
     // Auto sample-rate switching: state for loads awaiting a device rate change.
     private var pendingFile: AVAudioFile?
@@ -556,14 +560,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     guard let self = self else { return }
                     self.playlist.append(contentsOf: sortedTracks)
 
+                    // Warm the duration cache through the same deduplicated,
+                    // serial path the playlist rows use — the previous separate
+                    // bulk loader raced the per-row loads with concurrent opens
+                    // and updated no UI on completion.
                     for track in sortedTracks {
-                        let url = track.url
-                        guard self.durationCache[url] == nil else { continue }
-                        DispatchQueue.global(qos: .utility).async { [weak self] in
-                            guard let file = try? AVAudioFile(forReading: url) else { return }
-                            let d = Double(file.length) / file.processingFormat.sampleRate
-                            DispatchQueue.main.async { self?.durationCache[url] = d }
-                        }
+                        _ = self.getTrackDuration(for: track.url)
                     }
 
                     if wasEmpty {
@@ -1459,20 +1461,22 @@ class AudioPlayerManager: NSObject, ObservableObject {
         // Guard against spawning a new task on every re-render while the first is in flight.
         if pendingDurationURLs.contains(url) { return 0 }
         pendingDurationURLs.insert(url)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let file = try? AVAudioFile(forReading: url) else {
-                // Unblock the pending guard so a later re-render can retry;
-                // leaving the URL in the set would pin the row at 0:00 forever.
-                DispatchQueue.main.async { [weak self] in
-                    self?.pendingDurationURLs.remove(url)
-                }
-                return
+        durationQueue.async { [weak self] in
+            var d: TimeInterval = 0
+            do {
+                let file = try AVAudioFile(forReading: url)
+                let rate = file.processingFormat.sampleRate
+                if rate > 0 { d = Double(file.length) / rate }
+            } catch {
+                print("Duration read failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
-            let d = Double(file.length) / file.processingFormat.sampleRate
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.pendingDurationURLs.remove(url)
-                self.durationCache[url] = d
+                // Failures aren't cached: removing the URL from pending lets a
+                // later render retry (and playing the track fills the real
+                // value via completePendingLoad regardless).
+                if d > 0 { self.durationCache[url] = d }
                 self.scheduleMetadataRefresh()
             }
         }
