@@ -1140,6 +1140,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
             isTrackLoaded = true
             isRateConverting = false
             availableOutputRates = []
+            // Zero the position anchor NOW, not when the play SOAP completes.
+            // startTimer() begins ticking immediately; with the previous track's
+            // anchor still in place the interpolation would show that track's
+            // end position (clamped to the new duration — slider pinned at full)
+            // until startPositionPolling() resets it after the SOAP round-trip.
+            upnpManager.setPositionAnchor(0)
             if autoPlay, let fileURL = url {
                 let title  = currentTrackName
                 let artist = currentArtist
