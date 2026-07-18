@@ -188,9 +188,10 @@ struct PlaylistView: View {
                                 index: item.index,
                                 isCurrentTrack: item.index == playlistStore.currentIndex,
                                 previousTrack: prevTrack,
+                                metadata: mgr.getTrackMetadata(for: item.track),
+                                duration: mgr.getTrackDuration(at: item.index),
                                 onSelect: { mgr.selectTrack(at: item.index) },
-                                onDoubleClick: { mgr.startTrack(at: item.index) },
-                                audioPlayer: mgr
+                                onDoubleClick: { mgr.startTrack(at: item.index) }
                             )
                         }
                     }
@@ -914,13 +915,17 @@ struct PlaylistItemView: View {
     let index: Int
     let isCurrentTrack: Bool
     let previousTrack: PlaylistTrack?
+    // Metadata and duration are passed in as plain values, NOT read from the
+    // manager inside body. SwiftUI's view diffing can't see reads hidden in
+    // body, so it may skip re-evaluating an "unchanged" row after the caches
+    // fill — rows then stay at 0:00 despite the data being loaded. As stored
+    // value properties, a changed duration/title forces the row to re-render.
+    let metadata: TrackMetadata
+    let duration: TimeInterval
     let onSelect: () -> Void
     let onDoubleClick: () -> Void
-    let audioPlayer: AudioPlayerManager
 
     var body: some View {
-        let metadata = audioPlayer.getTrackMetadata(for: track)
-        let duration = audioPlayer.getTrackDuration(at: index)
         // Compare directories rather than tag strings — immune to async metadata
         // loading races where one track has loaded tags and the adjacent one has not.
         let showFullInfo = previousTrack == nil ||
