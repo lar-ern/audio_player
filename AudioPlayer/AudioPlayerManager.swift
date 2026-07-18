@@ -1036,6 +1036,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     }
                 }
             } else {
+                // A bare Play (resume) makes the renderer replay whatever URI it
+                // last held — after clearing the list and loading a new album,
+                // that would be the PREVIOUS album's last track (Stop does not
+                // clear the renderer's URI). Only resume when the renderer
+                // actually has the current playlist track loaded; otherwise
+                // start the current track properly with a fresh SetAVTransportURI.
+                guard let currentURL = playlist[safe: currentTrackIndex]?.url else { return }
+                if upnpManager.currentFileURL != currentURL {
+                    loadTrack(at: currentTrackIndex, autoPlay: true)
+                    return
+                }
                 // Optimistic update — UI responds instantly; revert on SOAP failure.
                 isPlaying = true
                 startTimer()
