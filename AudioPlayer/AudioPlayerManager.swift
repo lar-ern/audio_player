@@ -369,6 +369,15 @@ class AudioPlayerManager: NSObject, ObservableObject {
                     }
                 }
 
+                // FLAC: read STREAMINFO directly. AVFoundation reports
+                // mBitsPerChannel = 0 for compressed formats (no bit-depth label)
+                // and can report a decoder default rate instead of the true
+                // stream rate. The header is authoritative.
+                if let info = flacStreamInfo(url: url) {
+                    sampleRateText = String(format: "%.1f kHz", Double(info.rate) / 1000.0)
+                    bitDepthText = "\(info.bits)-bit"
+                }
+
                 let finalSampleRate = sampleRateText
                 let finalBitDepth = bitDepthText
                 let dirFallback = Self.directoryFallback(for: url)

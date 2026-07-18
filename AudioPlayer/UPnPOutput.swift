@@ -369,12 +369,16 @@ final class LocalAudioServer: @unchecked Sendable {
         }
         hdr += "\r\n"
 
+        // HEAD probe: renderers check the stream before playback — answer with
+        // headers only. Sending a body to HEAD can confuse their negotiation.
+        let isHead = request.hasPrefix("HEAD ")
+
         try? fileHandle.seek(toOffset: UInt64(rangeStart))
 
         // Send headers first, then stream file in 64 KB chunks so the renderer
         // starts buffering immediately without waiting for the entire file to be read.
         conn.send(content: hdr.data(using: .utf8)!, completion: .contentProcessed { [weak self] error in
-            guard error == nil else { conn.cancel(); try? fileHandle.close(); return }
+            guard error == nil, !isHead else { conn.cancel(); try? fileHandle.close(); return }
             self?.streamChunks(conn: conn, fileHandle: fileHandle, remaining: totalLength)
         })
     }
@@ -404,6 +408,41 @@ final class LocalAudioServer: @unchecked Sendable {
         case "ogg":  return "audio/ogg"
         default:     return "application/octet-stream"
         }
+    }
+}
+
+// MARK: - FLAC header parsing
+
+/// Read sample rate, bit depth, and channel count straight from a FLAC file's
+/// STREAMINFO block. Authoritative — this is the same header the renderer's
+/// decoder reads. AVFoundation reports mBitsPerChannel = 0 for compressed
+/// formats and can report a decoder default rate instead of the stream rate,
+/// so both the UI display and the DIDL metadata use this instead.
+/// Returns nil for non-FLAC files or on any parse failure.
+func flacStreamInfo(url: URL) -> (rate: Int, bits: Int, channels: Int)? {
+    guard url.pathExtension.lowercased() == "flac",
+          let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+    defer { try? fh.close() }
+    guard let magic = try? fh.read(upToCount: 4), magic == Data("fLaC".utf8) else { return nil }
+    // Metadata blocks: 1-byte header (bit7 = last-block flag, bits 0-6 = type),
+    // 3-byte big-endian length. STREAMINFO is type 0 and always comes first,
+    // but scan defensively.
+    while true {
+        guard let hdr = try? fh.read(upToCount: 4), hdr.count == 4 else { return nil }
+        let isLast = (hdr[0] & 0x80) != 0
+        let type   = hdr[0] & 0x7F
+        let length = Int(hdr[1]) << 16 | Int(hdr[2]) << 8 | Int(hdr[3])
+        if type == 0 {
+            guard let d = try? fh.read(upToCount: length), d.count >= 14 else { return nil }
+            // Bytes 10-13: 20-bit sample rate, 3-bit (channels-1), 5-bit (bps-1)
+            let rate     = Int(d[10]) << 12 | Int(d[11]) << 4 | Int(d[12]) >> 4
+            let channels = ((Int(d[12]) >> 1) & 0x07) + 1
+            let bits     = ((Int(d[12]) & 0x01) << 4 | Int(d[13]) >> 4) + 1
+            guard rate > 0 else { return nil }
+            return (rate, bits, channels)
+        }
+        if isLast { return nil }
+        guard (try? fh.seek(toOffset: fh.offsetInFile + UInt64(length))) != nil else { return nil }
     }
 }
 
@@ -550,11 +589,20 @@ final class UPnPAVTransport: @unchecked Sendable {
     // MARK: - DIDL-Lite metadata
 
     static func didlMetadata(title: String, artist: String, album: String,
-                              uri: String, mime: String) -> String {
+                              uri: String, mime: String,
+                              sampleFrequency: Int = 0, bitsPerSample: Int = 0,
+                              channels: Int = 0) -> String {
         let safeTitle  = escapeXML(title)
         let safeArtist = escapeXML(artist)
         let safeAlbum  = escapeXML(album)
         let safeURI    = escapeXML(uri)
+        // Advertise the true stream parameters. Some renderers configure their
+        // output pipeline from these res attributes rather than sniffing the
+        // stream, and resample to a default (e.g. 48 kHz) when they're absent.
+        var resAttrs = "protocolInfo=\"http-get:*:\(mime):*\""
+        if sampleFrequency > 0 { resAttrs += " sampleFrequency=\"\(sampleFrequency)\"" }
+        if bitsPerSample > 0   { resAttrs += " bitsPerSample=\"\(bitsPerSample)\"" }
+        if channels > 0        { resAttrs += " nrAudioChannels=\"\(channels)\"" }
         return """
         <DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
                    xmlns:dc="http://purl.org/dc/elements/1.1/"
@@ -564,7 +612,7 @@ final class UPnPAVTransport: @unchecked Sendable {
             <dc:creator>\(safeArtist)</dc:creator>
             <upnp:album>\(safeAlbum)</upnp:album>
             <upnp:class>object.item.audioItem.musicTrack</upnp:class>
-            <res protocolInfo="http-get:*:\(mime):*">\(safeURI)</res>
+            <res \(resAttrs)>\(safeURI)</res>
           </item>
         </DIDL-Lite>
         """
@@ -756,8 +804,12 @@ final class UPnPOutputManager: ObservableObject {
         }
         let trackURI = registerAndBuildURI(for: fileURL, ip: ip)
         let mime = mimeForExtension(fileURL.pathExtension)
+        let info = flacStreamInfo(url: fileURL) ?? (rate: 0, bits: 0, channels: 0)
         let metadata = UPnPAVTransport.didlMetadata(title: title, artist: artist,
-                                                     album: album, uri: trackURI, mime: mime)
+                                                     album: album, uri: trackURI, mime: mime,
+                                                     sampleFrequency: info.rate,
+                                                     bitsPerSample: info.bits,
+                                                     channels: info.channels)
 
         try await transport.setAVTransportURI(uri: trackURI, metadata: metadata)
         try await transport.play()
@@ -786,8 +838,12 @@ final class UPnPOutputManager: ObservableObject {
               let ip = localIPAddress() else { return }
         let uri  = registerAndBuildURI(for: fileURL, ip: ip)
         let mime = mimeForExtension(fileURL.pathExtension)
+        let info = flacStreamInfo(url: fileURL) ?? (rate: 0, bits: 0, channels: 0)
         let metadata = UPnPAVTransport.didlMetadata(title: title, artist: artist,
-                                                     album: album, uri: uri, mime: mime)
+                                                     album: album, uri: uri, mime: mime,
+                                                     sampleFrequency: info.rate,
+                                                     bitsPerSample: info.bits,
+                                                     channels: info.channels)
         do {
             try await transport.setNextAVTransportURI(uri: uri, metadata: metadata)
             await MainActor.run { self.nextQueued = (uri, duration) }
