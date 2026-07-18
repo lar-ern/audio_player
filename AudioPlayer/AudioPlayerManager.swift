@@ -1462,13 +1462,31 @@ class AudioPlayerManager: NSObject, ObservableObject {
         if pendingDurationURLs.contains(url) { return 0 }
         pendingDurationURLs.insert(url)
         durationQueue.async { [weak self] in
+            // Run the open on its own thread with a timeout. AVAudioFile can
+            // hang indefinitely on a pathological file (corrupt container,
+            // not-yet-materialized iCloud file) and this queue is serial —
+            // without the timeout one bad file blocks every track behind it,
+            // which showed up as "durations stop dead at track N".
             var d: TimeInterval = 0
-            do {
-                let file = try AVAudioFile(forReading: url)
-                let rate = file.processingFormat.sampleRate
-                if rate > 0 { d = Double(file.length) / rate }
-            } catch {
-                print("Duration read failed for \(url.lastPathComponent): \(error.localizedDescription)")
+            let done = DispatchSemaphore(value: 0)
+            let worker = Thread {
+                defer { done.signal() }
+                do {
+                    let file = try AVAudioFile(forReading: url)
+                    let rate = file.processingFormat.sampleRate
+                    if rate > 0 { d = Double(file.length) / rate }
+                } catch {
+                    print("Duration read failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            worker.start()
+            let result: TimeInterval
+            if done.wait(timeout: .now() + 10) == .success {
+                result = d
+            } else {
+                // Abandon the hung thread and move on to the next file.
+                result = 0
+                print("Duration read TIMED OUT for \(url.lastPathComponent) — skipping")
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -1476,7 +1494,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 // Failures aren't cached: removing the URL from pending lets a
                 // later render retry (and playing the track fills the real
                 // value via completePendingLoad regardless).
-                if d > 0 { self.durationCache[url] = d }
+                if result > 0 { self.durationCache[url] = result }
                 self.scheduleMetadataRefresh()
             }
         }
