@@ -1450,7 +1450,14 @@ class AudioPlayerManager: NSObject, ObservableObject {
         if pendingDurationURLs.contains(url) { return 0 }
         pendingDurationURLs.insert(url)
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let file = try? AVAudioFile(forReading: url) else { return }
+            guard let file = try? AVAudioFile(forReading: url) else {
+                // Unblock the pending guard so a later re-render can retry;
+                // leaving the URL in the set would pin the row at 0:00 forever.
+                DispatchQueue.main.async { [weak self] in
+                    self?.pendingDurationURLs.remove(url)
+                }
+                return
+            }
             let d = Double(file.length) / file.processingFormat.sampleRate
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -1508,7 +1515,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
     /// 20+ visible uncached tracks each trigger a separate full re-render.
     private func scheduleMetadataRefresh() {
         metadataRefreshItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.objectWillChange.send() }
+        let item = DispatchWorkItem { [weak self] in
+            self?.objectWillChange.send()
+            // PlaylistView observes only PlaylistStore (deliberate isolation from
+            // timer ticks etc.), so the store must also be pinged or freshly
+            // cached durations/titles never appear in the playlist rows.
+            self?.playlistStore.objectWillChange.send()
+        }
         metadataRefreshItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
     }
