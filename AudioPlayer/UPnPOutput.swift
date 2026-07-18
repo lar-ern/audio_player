@@ -552,6 +552,17 @@ final class UPnPAVTransport: @unchecked Sendable {
         return xmlValue(response, tag: "CurrentTransportState") ?? "UNKNOWN"
     }
 
+    /// CurrentURI/NextURI from the renderer's media info. CurrentURI is
+    /// mandatory AVTransport state and updates on every track transition,
+    /// making it a reliable transition signal even on renderers that report
+    /// no playback position (e.g. Aurender ACS-100).
+    func getMediaInfo() async throws -> (currentURI: String, nextURI: String) {
+        let body = soapBody(action: "GetMediaInfo", args: [("InstanceID", "0")])
+        let response = try await soapRequest(action: "GetMediaInfo", body: body)
+        return (xmlValue(response, tag: "CurrentURI") ?? "",
+                xmlValue(response, tag: "NextURI") ?? "")
+    }
+
     // MARK: - SOAP
 
     @discardableResult
@@ -947,28 +958,25 @@ final class UPnPOutputManager: ObservableObject {
             if nearEnd {
                 if let next = nextQueued {
                     // A next track is queued on the renderer via
-                    // SetNextAVTransportURI — watch for the gapless transition
-                    // instead of a stop. Detected either by TrackURI switching
-                    // to the queued URI, or (for renderers that don't report
-                    // TrackURI) by the track duration elapsing while the
-                    // transport keeps playing.
-                    let advancedByURI = !info.uri.isEmpty && info.uri == next.uri
-                    var advancedByTime = false
-                    if !advancedByURI && effectivePosition >= effectiveDuration {
-                        let state = (try? await transport.getTransportInfo()) ?? ""
-                        if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
-                            // Renderer didn't honour the queued next track.
-                            nextQueued = nil
-                            stopPositionPolling()
-                            onPlaybackFinished?()
-                            return
-                        }
-                        advancedByTime = (state == "PLAYING" || state == "TRANSITIONING")
+                    // SetNextAVTransportURI. Only advance when the renderer
+                    // PROVABLY switched to it: TrackURI (position info) or
+                    // CurrentURI (media info) equals the queued URI. Guessing
+                    // from elapsed time proved harmful — our clock leads the
+                    // real audio by the buffering delay, so a time-based
+                    // advance re-queued the FOLLOWING track over the
+                    // renderer's NextURI before the transition happened,
+                    // making the renderer skip tracks and eventually stop
+                    // while the UI kept playing.
+                    var advanced = !info.uri.isEmpty && info.uri == next.uri
+                    if !advanced, let media = try? await transport.getMediaInfo() {
+                        advanced = media.currentURI == next.uri
                     }
-                    if advancedByURI || advancedByTime {
+                    if advanced {
                         // Re-anchor all position state for the new track and
                         // tell the manager to advance the UI. No SOAP needed —
-                        // the renderer is already playing the next track.
+                        // the renderer is already playing the next track, and
+                        // queueing the following track (via onTrackAdvanced)
+                        // is now safe because the old NextURI was consumed.
                         nextQueued = nil
                         currentFileURL = next.fileURL
                         trackDuration = next.duration
@@ -977,6 +985,16 @@ final class UPnPOutputManager: ObservableObject {
                         pollingStartedAt = Date()
                         lastPositionUpdateTime = Date()
                         onTrackAdvanced?()
+                    } else if effectivePosition >= effectiveDuration {
+                        // Past the expected end with no transition observed —
+                        // if the renderer stopped it didn't honour the queued
+                        // next track; fall back to the SOAP-driven advance.
+                        let state = (try? await transport.getTransportInfo()) ?? ""
+                        if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
+                            nextQueued = nil
+                            stopPositionPolling()
+                            onPlaybackFinished?()
+                        }
                     }
                 } else {
                     let state = (try? await transport.getTransportInfo()) ?? ""
