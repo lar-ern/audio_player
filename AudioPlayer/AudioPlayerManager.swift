@@ -149,6 +149,10 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var audioEngine = AudioEngine()
     let upnpManager = UPnPOutputManager()
     private var cancellables = Set<AnyCancellable>()
+    /// True while the user is dragging the progress slider. The playback timer
+    /// must not overwrite currentTime during the drag or the thumb fights the
+    /// user's finger. Set from the slider's onEditingChanged.
+    var isScrubbing = false
     private var timer: Timer?
     private var metadataRefreshItem: DispatchWorkItem?
     private var trackGapTimer: Timer?
@@ -1064,10 +1068,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
     func seek(to time: Double) {
         if upnpManager.isActive {
+            // Update the display and the interpolation anchor BEFORE the SOAP
+            // round-trip. Otherwise the 0.25s timer keeps computing currentTime
+            // from the old anchor while the seek is in flight, snapping the
+            // progress indicator back to the pre-seek position for ~half a second.
+            currentTime = time
+            playbackStartPosition = time
+            playbackStartTime = Date()
+            upnpManager.setPositionAnchor(time)
             Task {
                 do {
                     try await upnpManager.seek(to: time)
-                    self.currentTime = time
                 } catch {
                     print("UPnP seek failed: \(error.localizedDescription)")
                 }
@@ -1487,7 +1498,7 @@ class AudioPlayerManager: NSObject, ObservableObject {
             upnpManager.setPositionAnchor(currentTime)
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
+            guard let self = self, !self.isScrubbing else { return }
             if self.upnpManager.isActive {
                 if self.isPlaying {
                     // Interpolate between SOAP polls for smooth display.

@@ -409,6 +409,7 @@ struct PlayerControlsView: View {
             // Progress bar
             VStack(spacing: 8) {
                 Slider(value: $clock.currentTime, in: 0...max(audioPlayer.duration, 1.0)) { editing in
+                    audioPlayer.isScrubbing = editing
                     if !editing { audioPlayer.seek(to: clock.currentTime) }
                 }
                 .tint(Color(white: 0.50))
