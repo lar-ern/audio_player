@@ -160,6 +160,13 @@ class AudioPlayerManager: NSObject, ObservableObject {
     var isScrubbing = false
     private var timer: Timer?
     private var metadataRefreshItem: DispatchWorkItem?
+    // Serial chain for background playlist-row metadata loads. Launching an
+    // AVURLAsset load for every row at once (20+ concurrent) piles up on
+    // AVFoundation's internal parsing queues and starves them all on a 2-core
+    // Intel Mac — while any single file loads instantly. One at a time is fast
+    // and predictable. The current track's extractMetadata stays independent
+    // so a clicked track is never queued behind background loads.
+    private var metadataLoadChain: Task<Void, Never>?
     private var trackGapTimer: Timer?
     private var playbackStartTime: Date?
     private var playbackStartPosition: Double = 0
@@ -1514,8 +1521,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
         )
         metadataCache[url] = result
 
-        // Load async and update cache — AVURLAsset created inside Task to keep main thread free
-        Task {
+        // Load async and update cache. Chained onto the previous load so only
+        // ONE background AVURLAsset parse runs at a time (see metadataLoadChain).
+        let previous = metadataLoadChain
+        metadataLoadChain = Task {
+            await previous?.value
+
             let asset = AVURLAsset(url: url)
             guard let metadata = try? await asset.load(.metadata) else { return }
 
