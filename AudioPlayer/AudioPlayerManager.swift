@@ -224,6 +224,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
             handleFinished(self)
         }
 
+        // The renderer moved to the queued next track by itself (gapless).
+        // Advance the UI only — no transport commands.
+        upnpManager.onTrackAdvanced = { [weak self] in
+            DispatchQueue.main.async { self?.handleUPnPTrackAdvance() }
+        }
+
         // Apply initial EQ settings
         updateEQ()
 
@@ -1138,6 +1144,9 @@ class AudioPlayerManager: NSObject, ObservableObject {
                                                         title: title,
                                                         artist: artist,
                                                         album: album)
+                        // Queue the following playlist track on the renderer so
+                        // it can transition gaplessly when this one ends.
+                        DispatchQueue.main.async { self.queueNextUPnPTrack() }
                     } catch {
                         print("UPnP play failed: \(error.localizedDescription)")
                         self.isPlaying = false
@@ -1203,6 +1212,62 @@ class AudioPlayerManager: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - UPnP gapless queueing
+
+    /// Hand the next playlist track to the renderer (SetNextAVTransportURI) so
+    /// it can transition without a gap when the current track ends.
+    private func queueNextUPnPTrack() {
+        let nextIndex = currentTrackIndex + 1
+        guard upnpManager.isActive, nextIndex < playlist.count else { return }
+        let url  = playlist[nextIndex].url
+        let meta = getTrackMetadata(for: url)
+        let dur  = getTrackDuration(for: url)
+        Task {
+            await self.upnpManager.queueNext(fileURL: url,
+                                             title: meta.title,
+                                             artist: meta.artist,
+                                             album: meta.album,
+                                             duration: dur)
+        }
+    }
+
+    /// The renderer transitioned to the queued track on its own. Update the UI
+    /// to match and queue the following track — no transport commands, since
+    /// audio is already playing.
+    private func handleUPnPTrackAdvance() {
+        let nextIndex = currentTrackIndex + 1
+        guard nextIndex < playlist.count else { return }
+        currentTrackIndex = nextIndex
+        let url = playlist[nextIndex].url
+
+        loadGeneration += 1
+        let generation = loadGeneration
+
+        currentTrackName = url.deletingPathExtension().lastPathComponent
+        currentTime = 0
+        playbackStartPosition = 0
+        playbackStartTime = Date()
+        let d = getTrackDuration(for: url)
+        if d > 0 {
+            duration = d
+            upnpManager.trackDuration = d
+        }
+
+        let newArtworkDir = url.deletingLastPathComponent()
+        let sameAlbum = newArtworkDir == lastArtworkDirectory
+        if !sameAlbum {
+            artworkImages = []; artworkImageURLs = []
+            currentArtworkIndex = 0
+            lastArtworkDirectory = newArtworkDir
+        }
+        extractMetadata(from: url, generation: generation, skipArtwork: sameAlbum)
+        if !sameAlbum {
+            scanDirectoryArtworks(for: url, generation: generation)
+        }
+
+        queueNextUPnPTrack()
     }
 
     // MARK: - Auto sample-rate switching (CoreAudio)

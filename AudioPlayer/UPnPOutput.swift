@@ -261,6 +261,10 @@ final class LocalAudioServer: @unchecked Sendable {
     private(set) var port: UInt16 = 0
     private var listener: NWListener?
     private var currentFileURL: URL?
+    // Path → file map so the current AND queued-next track can be streamed
+    // concurrently (SetNextAVTransportURI gapless support). The renderer
+    // pre-fetches the next URI while the current one is still playing.
+    private var registeredFiles: [String: URL] = [:]
     private let queue = DispatchQueue(label: "com.audioplayer.httpserver")
 
     func start() throws {
@@ -294,6 +298,13 @@ final class LocalAudioServer: @unchecked Sendable {
         currentFileURL = url
     }
 
+    /// Register a file to be served at a specific request path (e.g. "/track3.flac").
+    func registerFile(_ url: URL, at path: String) {
+        queue.async { [weak self] in
+            self?.registeredFiles[path] = url
+        }
+    }
+
     // MARK: - Connection handling
 
     private func handleConnection(_ conn: NWConnection) {
@@ -312,7 +323,12 @@ final class LocalAudioServer: @unchecked Sendable {
     }
 
     private func serveResponse(for request: String, on conn: NWConnection) {
-        guard let fileURL = currentFileURL,
+        // Route by request path so current and queued-next tracks resolve to
+        // their own files; fall back to the single current file for any
+        // unrecognised path (older behaviour).
+        let requestPath = request.components(separatedBy: "\r\n").first?
+            .components(separatedBy: " ").dropFirst().first ?? ""
+        guard let fileURL = registeredFiles[requestPath] ?? currentFileURL,
               let fileHandle = try? FileHandle(forReadingFrom: fileURL),
               let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
         else {
@@ -446,6 +462,17 @@ final class UPnPAVTransport: @unchecked Sendable {
         try await soapRequest(action: "SetAVTransportURI", body: body)
     }
 
+    /// Queue the following track on the renderer so it can transition gaplessly
+    /// without waiting for a new SetAVTransportURI + Play round-trip from us.
+    func setNextAVTransportURI(uri: String, metadata: String) async throws {
+        let body = soapBody(action: "SetNextAVTransportURI", args: [
+            ("InstanceID", "0"),
+            ("NextURI", escapeXML(uri)),
+            ("NextURIMetaData", escapeXML(metadata)),
+        ])
+        try await soapRequest(action: "SetNextAVTransportURI", body: body)
+    }
+
     func play(speed: String = "1") async throws {
         let body = soapBody(action: "Play", args: [
             ("InstanceID", "0"),
@@ -553,7 +580,8 @@ final class UPnPAVTransport: @unchecked Sendable {
         let relTime = parseTime(xmlValue(xml, tag: "RelTime") ?? "0:00:00")
         let absTime = parseTime(xmlValue(xml, tag: "AbsTime") ?? "0:00:00")
         let position = relTime > 0 ? relTime : absTime
-        return UPnPPositionInfo(track: track, duration: duration, position: position)
+        let uri = xmlValue(xml, tag: "TrackURI") ?? ""
+        return UPnPPositionInfo(track: track, duration: duration, position: position, uri: uri)
     }
 
     private func xmlValue(_ xml: String, tag: String) -> String? {
@@ -594,6 +622,7 @@ struct UPnPPositionInfo {
     let track: Int
     let duration: TimeInterval
     let position: TimeInterval
+    let uri: String   // TrackURI as reported by the renderer ("" if not reported)
 }
 
 enum UPnPError: Error, LocalizedError {
@@ -644,8 +673,17 @@ final class UPnPOutputManager: ObservableObject {
     var trackDuration: TimeInterval = 0
     private var pollingStartedAt: Date = Date()
 
+    // Gapless queueing: the next track handed to the renderer via
+    // SetNextAVTransportURI, so it can transition on its own without a gap.
+    private var nextQueued: (uri: String, duration: TimeInterval)? = nil
+    private var serverPathCounter = 0
+
     // Completion callback (mirrors AudioEngine)
     var onPlaybackFinished: (() -> Void)?
+    // Fired when the renderer transitioned to the queued next track by itself
+    // (gapless advance) — the UI should move to the next playlist entry
+    // WITHOUT sending any transport commands.
+    var onTrackAdvanced: (() -> Void)?
 
     // MARK: - Discovery
 
@@ -704,6 +742,7 @@ final class UPnPOutputManager: ObservableObject {
         // cold SOAP round-trip on first play when the renderer is idle.
         if remotelyPlaying { try? await transport.stop() }
         remotelyPlaying = false
+        nextQueued = nil   // explicit new play supersedes any queued next track
 
         currentFileURL = fileURL
         currentTitle   = title
@@ -715,7 +754,7 @@ final class UPnPOutputManager: ObservableObject {
         guard let ip = localIPAddress() else {
             throw UPnPError.transportError("Cannot determine local IP address")
         }
-        let trackURI = "http://\(ip):\(httpServer.port)/track\(fileURL.pathExtension.isEmpty ? "" : "." + fileURL.pathExtension)"
+        let trackURI = registerAndBuildURI(for: fileURL, ip: ip)
         let mime = mimeForExtension(fileURL.pathExtension)
         let metadata = UPnPAVTransport.didlMetadata(title: title, artist: artist,
                                                      album: album, uri: trackURI, mime: mime)
@@ -724,6 +763,38 @@ final class UPnPOutputManager: ObservableObject {
         try await transport.play()
         remotelyPlaying = true
         DispatchQueue.main.async { [weak self] in self?.startPositionPolling() }
+    }
+
+    /// Register `fileURL` with the HTTP server under a unique path and return
+    /// the full URI the renderer should fetch. Each track gets its own path so
+    /// the current and queued-next tracks can be streamed concurrently.
+    private func registerAndBuildURI(for fileURL: URL, ip: String) -> String {
+        serverPathCounter += 1
+        let ext  = fileURL.pathExtension
+        let path = "/track\(serverPathCounter)" + (ext.isEmpty ? "" : "." + ext)
+        httpServer.registerFile(fileURL, at: path)
+        return "http://\(ip):\(httpServer.port)\(path)"
+    }
+
+    /// Hand the next playlist track to the renderer via SetNextAVTransportURI so
+    /// it can transition gaplessly on its own. A renderer that doesn't implement
+    /// the action returns a SOAP fault, which we swallow — playback then falls
+    /// back to the STOPPED-detection path in pollPosition().
+    func queueNext(fileURL: URL, title: String, artist: String, album: String,
+                   duration: TimeInterval) async {
+        guard let transport = transport, serverStarted,
+              let ip = localIPAddress() else { return }
+        let uri  = registerAndBuildURI(for: fileURL, ip: ip)
+        let mime = mimeForExtension(fileURL.pathExtension)
+        let metadata = UPnPAVTransport.didlMetadata(title: title, artist: artist,
+                                                     album: album, uri: uri, mime: mime)
+        do {
+            try await transport.setNextAVTransportURI(uri: uri, metadata: metadata)
+            await MainActor.run { self.nextQueued = (uri, duration) }
+        } catch {
+            os_log("SetNextAVTransportURI unsupported/failed: %{public}@",
+                   log: upnpLog, type: .info, error.localizedDescription)
+        }
     }
 
     func resume() async throws {
@@ -739,6 +810,7 @@ final class UPnPOutputManager: ObservableObject {
     func stop() async throws {
         guard let transport = transport else { throw UPnPError.noDeviceSelected }
         remotelyPlaying = false
+        nextQueued = nil
         try await transport.stop()
         DispatchQueue.main.async { [weak self] in self?.stopPositionPolling() }
     }
@@ -807,10 +879,44 @@ final class UPnPOutputManager: ObservableObject {
             let effectivePosition = info.position > 0 ? info.position : elapsed
             let nearEnd = effectiveDuration > 0 && effectivePosition >= effectiveDuration - 4.0
             if nearEnd {
-                let state = (try? await transport.getTransportInfo()) ?? ""
-                if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
-                    stopPositionPolling()
-                    onPlaybackFinished?()
+                if let next = nextQueued {
+                    // A next track is queued on the renderer via
+                    // SetNextAVTransportURI — watch for the gapless transition
+                    // instead of a stop. Detected either by TrackURI switching
+                    // to the queued URI, or (for renderers that don't report
+                    // TrackURI) by the track duration elapsing while the
+                    // transport keeps playing.
+                    let advancedByURI = !info.uri.isEmpty && info.uri == next.uri
+                    var advancedByTime = false
+                    if !advancedByURI && effectivePosition >= effectiveDuration {
+                        let state = (try? await transport.getTransportInfo()) ?? ""
+                        if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
+                            // Renderer didn't honour the queued next track.
+                            nextQueued = nil
+                            stopPositionPolling()
+                            onPlaybackFinished?()
+                            return
+                        }
+                        advancedByTime = (state == "PLAYING" || state == "TRANSITIONING")
+                    }
+                    if advancedByURI || advancedByTime {
+                        // Re-anchor all position state for the new track and
+                        // tell the manager to advance the UI. No SOAP needed —
+                        // the renderer is already playing the next track.
+                        nextQueued = nil
+                        trackDuration = next.duration
+                        rendererPosition = 0
+                        rendererDuration = 0
+                        pollingStartedAt = Date()
+                        lastPositionUpdateTime = Date()
+                        onTrackAdvanced?()
+                    }
+                } else {
+                    let state = (try? await transport.getTransportInfo()) ?? ""
+                    if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
+                        stopPositionPolling()
+                        onPlaybackFinished?()
+                    }
                 }
             }
         } catch {
