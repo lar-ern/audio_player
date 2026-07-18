@@ -703,8 +703,10 @@ final class UPnPOutputManager: ObservableObject {
     private var transport:    UPnPAVTransport?
     private var serverStarted = false
 
-    // Current track info for metadata
-    private var currentFileURL: URL?
+    // Current track info for metadata. currentFileURL is readable so
+    // AudioPlayerManager can tell whether the renderer holds the current
+    // playlist track (safe to bare-resume) or something stale.
+    private(set) var currentFileURL: URL?
     private var currentTitle:   String = ""
     private var currentArtist:  String = ""
     private var currentAlbum:   String = ""
@@ -723,7 +725,7 @@ final class UPnPOutputManager: ObservableObject {
 
     // Gapless queueing: the next track handed to the renderer via
     // SetNextAVTransportURI, so it can transition on its own without a gap.
-    private var nextQueued: (uri: String, duration: TimeInterval)? = nil
+    private var nextQueued: (uri: String, duration: TimeInterval, fileURL: URL)? = nil
     private var serverPathCounter = 0
 
     // Completion callback (mirrors AudioEngine)
@@ -812,6 +814,11 @@ final class UPnPOutputManager: ObservableObject {
                                                      channels: info.channels)
 
         try await transport.setAVTransportURI(uri: trackURI, metadata: metadata)
+        // Clear any stale queued next track on the renderer (e.g. from a
+        // previous album) so it can't auto-advance into old material. The
+        // correct next track is re-queued after Play succeeds. A renderer
+        // that rejects an empty NextURI just faults harmlessly.
+        try? await transport.setNextAVTransportURI(uri: "", metadata: "")
         try await transport.play()
         remotelyPlaying = true
         DispatchQueue.main.async { [weak self] in self?.startPositionPolling() }
@@ -846,7 +853,7 @@ final class UPnPOutputManager: ObservableObject {
                                                      channels: info.channels)
         do {
             try await transport.setNextAVTransportURI(uri: uri, metadata: metadata)
-            await MainActor.run { self.nextQueued = (uri, duration) }
+            await MainActor.run { self.nextQueued = (uri, duration, fileURL) }
         } catch {
             os_log("SetNextAVTransportURI unsupported/failed: %{public}@",
                    log: upnpLog, type: .info, error.localizedDescription)
@@ -963,6 +970,7 @@ final class UPnPOutputManager: ObservableObject {
                         // tell the manager to advance the UI. No SOAP needed —
                         // the renderer is already playing the next track.
                         nextQueued = nil
+                        currentFileURL = next.fileURL
                         trackDuration = next.duration
                         rendererPosition = 0
                         rendererDuration = 0
