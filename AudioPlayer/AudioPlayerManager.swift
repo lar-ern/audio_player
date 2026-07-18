@@ -30,6 +30,11 @@ final class PlaylistStore: ObservableObject {
     @Published var currentIndex: Int = 0
     @Published var searchText: String = ""
     @Published var isWideLayout: Bool = true
+    /// Track durations keyed by file URL. Lives on the store as @Published so
+    /// every async duration load automatically repaints the playlist rows —
+    /// PlaylistView observes only this store, and routing the repaint through
+    /// manual objectWillChange pings proved unreliable.
+    @Published var durations: [URL: TimeInterval] = [:]
 
     // Non-reactive back-reference: PlaylistView calls manager methods
     // (selectTrack, getTrackMetadata, etc.) without subscribing to the manager.
@@ -159,7 +164,12 @@ class AudioPlayerManager: NSObject, ObservableObject {
     private var playbackStartTime: Date?
     private var playbackStartPosition: Double = 0
     private var metadataCache: [URL: TrackMetadata] = [:]
-    private var durationCache: [URL: TimeInterval] = [:]
+    // Proxy onto PlaylistStore.durations (@Published) so every duration write
+    // repaints the playlist rows through normal SwiftUI observation.
+    private var durationCache: [URL: TimeInterval] {
+        get { playlistStore.durations }
+        set { playlistStore.durations = newValue }
+    }
     private var pendingDurationURLs: Set<URL> = []
     private var lastArtworkDirectory: URL? = nil
 
