@@ -823,12 +823,15 @@ final class UPnPOutputManager: ObservableObject {
     // MARK: - Position polling
 
     /// Re-anchor the display position to `position` at the current moment.
-    /// Called by AudioPlayerManager.startTimer() when resuming from pause so the
-    /// interpolation timer continues from the frozen display value rather than
-    /// from a stale lastPositionUpdateTime that includes the paused duration.
+    /// Called when resuming from pause and when seeking, so the interpolation
+    /// timer continues from the new value rather than a stale anchor.
+    /// pollingStartedAt is back-dated by `position` so the elapsed-time fallback
+    /// (used for position display and end-of-track detection on renderers that
+    /// report no position) also reflects the seek/resume point.
     func setPositionAnchor(_ position: TimeInterval) {
         rendererPosition = position
         lastPositionUpdateTime = Date()
+        pollingStartedAt = Date().addingTimeInterval(-position)
     }
 
     private func startPositionPolling() {
