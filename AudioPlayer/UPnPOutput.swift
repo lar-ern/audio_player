@@ -733,6 +733,10 @@ final class UPnPOutputManager: ObservableObject {
     // when the renderer doesn't report position/duration via GetPositionInfo.
     var trackDuration: TimeInterval = 0
     private var pollingStartedAt: Date = Date()
+    // True once the renderer has reported PLAYING for the current track.
+    // Gates stop-detection (buffering can briefly report STOPPED) and anchors
+    // the display clock to actual audio start.
+    private var sawPlaying: Bool = false
 
     // Gapless queueing: the next track handed to the renderer via
     // SetNextAVTransportURI, so it can transition on its own without a gap.
@@ -745,6 +749,10 @@ final class UPnPOutputManager: ObservableObject {
     // (gapless advance) — the UI should move to the next playlist entry
     // WITHOUT sending any transport commands.
     var onTrackAdvanced: (() -> Void)?
+    // Fired when the renderer stopped well short of the track's end — a
+    // streaming stall rather than a natural finish. The manager should
+    // restart the current track.
+    var onPlaybackStalled: (() -> Void)?
 
     // MARK: - Discovery
 
@@ -912,9 +920,13 @@ final class UPnPOutputManager: ObservableObject {
         stopPositionPolling()
         rendererPosition      = 0
         rendererDuration      = 0
+        sawPlaying            = false
         pollingStartedAt      = Date()
         lastPositionUpdateTime = Date()
-        positionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        // 1s interval: state changes (stall, natural stop, gapless transition)
+        // are caught within a second instead of two, halving both the between-
+        // track gap on the SOAP fallback and stall-detection latency.
+        positionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor [weak self] in
                 await self?.pollPosition()
@@ -938,70 +950,72 @@ final class UPnPOutputManager: ObservableObject {
             // Only advance the reference timestamp when the renderer reports a
             // real position. A zero returned during buffering or track transition
             // must not reset lastPositionUpdateTime, which would cause the
-            // interpolated display to snap back to 0 every 2 s.
+            // interpolated display to snap back to 0 on every poll.
             if info.position > 0 {
                 rendererPosition = info.position
                 lastPositionUpdateTime = Date()
             }
             if info.duration > 0 { rendererDuration = info.duration }
 
-            // Detect natural end-of-track.
-            // Primary: use SOAP-reported position and duration when available.
-            // Fallback: if the renderer doesn't report position (returns 0), use
-            // elapsed time since polling started vs the file duration passed in
-            // from AudioPlayerManager. This handles renderers like the Aurender
-            // ACS-100 that always return RelTime/AbsTime = 0:00:00.
+            // Transport state EVERY poll — not just near the end. A renderer
+            // that stops mid-track (streaming hiccup) previously went unnoticed:
+            // the app kept "playing" a phantom track until manually restarted.
+            let state = (try? await transport.getTransportInfo()) ?? "UNKNOWN"
+
+            if !sawPlaying && state == "PLAYING" {
+                sawPlaying = true
+                // Anchor the display clock to the moment audio actually starts,
+                // not when the Play SOAP call returned. Removes the 1-3s lead
+                // the progress bar had over the audible position (renderer
+                // buffering time), which also made it pin at 100% early.
+                pollingStartedAt = Date()
+                lastPositionUpdateTime = Date()
+            }
+
+            // Position/duration for end-of-track logic. SOAP values when
+            // reported; elapsed-time fallback for renderers like the ACS-100
+            // that always return RelTime/AbsTime = 0:00:00.
             let effectiveDuration = rendererDuration > 0 ? rendererDuration : trackDuration
             let elapsed = Date().timeIntervalSince(pollingStartedAt)
             let effectivePosition = info.position > 0 ? info.position : elapsed
             let nearEnd = effectiveDuration > 0 && effectivePosition >= effectiveDuration - 4.0
-            if nearEnd {
-                if let next = nextQueued {
-                    // A next track is queued on the renderer via
-                    // SetNextAVTransportURI. Only advance when the renderer
-                    // PROVABLY switched to it: TrackURI (position info) or
-                    // CurrentURI (media info) equals the queued URI. Guessing
-                    // from elapsed time proved harmful — our clock leads the
-                    // real audio by the buffering delay, so a time-based
-                    // advance re-queued the FOLLOWING track over the
-                    // renderer's NextURI before the transition happened,
-                    // making the renderer skip tracks and eventually stop
-                    // while the UI kept playing.
-                    var advanced = !info.uri.isEmpty && info.uri == next.uri
-                    if !advanced, let media = try? await transport.getMediaInfo() {
-                        advanced = media.currentURI == next.uri
-                    }
-                    if advanced {
-                        // Re-anchor all position state for the new track and
-                        // tell the manager to advance the UI. No SOAP needed —
-                        // the renderer is already playing the next track, and
-                        // queueing the following track (via onTrackAdvanced)
-                        // is now safe because the old NextURI was consumed.
-                        nextQueued = nil
-                        currentFileURL = next.fileURL
-                        trackDuration = next.duration
-                        rendererPosition = 0
-                        rendererDuration = 0
-                        pollingStartedAt = Date()
-                        lastPositionUpdateTime = Date()
-                        onTrackAdvanced?()
-                    } else if effectivePosition >= effectiveDuration {
-                        // Past the expected end with no transition observed —
-                        // if the renderer stopped it didn't honour the queued
-                        // next track; fall back to the SOAP-driven advance.
-                        let state = (try? await transport.getTransportInfo()) ?? ""
-                        if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
-                            nextQueued = nil
-                            stopPositionPolling()
-                            onPlaybackFinished?()
-                        }
-                    }
+
+            // Gapless transition check: only advance when the renderer PROVABLY
+            // switched to the queued URI (TrackURI or GetMediaInfo CurrentURI).
+            // Time-based guessing re-queued over an unconsumed NextURI and made
+            // the renderer skip tracks.
+            if nearEnd, let next = nextQueued {
+                var advanced = !info.uri.isEmpty && info.uri == next.uri
+                if !advanced, let media = try? await transport.getMediaInfo() {
+                    advanced = media.currentURI == next.uri
+                }
+                if advanced {
+                    nextQueued = nil
+                    currentFileURL = next.fileURL
+                    trackDuration = next.duration
+                    rendererPosition = 0
+                    rendererDuration = 0
+                    pollingStartedAt = Date()
+                    lastPositionUpdateTime = Date()
+                    onTrackAdvanced?()
+                    return
+                }
+            }
+
+            // Stop handling. sawPlaying gates it so the brief STOPPED that some
+            // renderers report while buffering a fresh URI isn't mistaken for a
+            // finished track.
+            if sawPlaying && (state == "STOPPED" || state == "NO_MEDIA_PRESENT") {
+                remotelyPlaying = false
+                nextQueued = nil
+                stopPositionPolling()
+                if effectiveDuration > 0 && effectivePosition < effectiveDuration - 8.0 {
+                    // Stopped well short of the end: a streaming stall, not a
+                    // natural finish. Let the manager restart the current track.
+                    print("[upnp] renderer stopped mid-track at ~\(Int(effectivePosition))s of \(Int(effectiveDuration))s")
+                    onPlaybackStalled?()
                 } else {
-                    let state = (try? await transport.getTransportInfo()) ?? ""
-                    if state == "STOPPED" || state == "NO_MEDIA_PRESENT" {
-                        stopPositionPolling()
-                        onPlaybackFinished?()
-                    }
+                    onPlaybackFinished?()
                 }
             }
         } catch {
