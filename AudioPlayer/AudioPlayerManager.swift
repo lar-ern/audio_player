@@ -229,7 +229,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
 
             let nextIndex = mgr.currentTrackIndex + 1
             guard nextIndex < mgr.playlist.count else { return }  // stop at end
-            if mgr.gapDuration <= 0 {
+            // UPnP: skip the local gap timer — the SOAP fallback path already
+            // has seconds of inherent latency (poll detection + SOAP round-trips
+            // + renderer buffering); adding the cosmetic gap on top made
+            // between-track waits painfully long.
+            if mgr.gapDuration <= 0 || mgr.upnpManager.isActive {
                 mgr.loadTrack(at: nextIndex, autoPlay: true)
             } else {
                 mgr.trackGapTimer = Timer.scheduledTimer(withTimeInterval: mgr.gapDuration, repeats: false) { [weak mgr] _ in
@@ -253,6 +257,17 @@ class AudioPlayerManager: NSObject, ObservableObject {
         // Advance the UI only — no transport commands.
         upnpManager.onTrackAdvanced = { [weak self] in
             DispatchQueue.main.async { self?.handleUPnPTrackAdvance() }
+        }
+
+        // The renderer stopped mid-track (streaming stall, not a natural end).
+        // Restart the current track automatically instead of playing on as a
+        // phantom until the user notices the silence.
+        upnpManager.onPlaybackStalled = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self, self.upnpManager.isActive else { return }
+                print("[upnp] restarting current track after mid-track stall")
+                self.loadTrack(at: self.currentTrackIndex, autoPlay: true)
+            }
         }
 
         // Apply initial EQ settings
