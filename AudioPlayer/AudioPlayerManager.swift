@@ -253,10 +253,11 @@ class AudioPlayerManager: NSObject, ObservableObject {
             handleFinished(self)
         }
 
-        // The renderer moved to the queued next track by itself (gapless).
-        // Advance the UI only — no transport commands.
-        upnpManager.onTrackAdvanced = { [weak self] in
-            DispatchQueue.main.async { self?.handleUPnPTrackAdvance() }
+        // The renderer is playing a different track than the UI shows (gapless
+        // advance or a missed transition). Follow the renderer — no transport
+        // commands.
+        upnpManager.onRendererTrackChanged = { [weak self] fileURL in
+            DispatchQueue.main.async { self?.handleUPnPRendererTrackChange(to: fileURL) }
         }
 
         // The renderer stopped mid-track (streaming stall, not a natural end).
@@ -1304,14 +1305,14 @@ class AudioPlayerManager: NSObject, ObservableObject {
         }
     }
 
-    /// The renderer transitioned to the queued track on its own. Update the UI
-    /// to match and queue the following track — no transport commands, since
-    /// audio is already playing.
-    private func handleUPnPTrackAdvance() {
-        let nextIndex = currentTrackIndex + 1
-        guard nextIndex < playlist.count else { return }
-        currentTrackIndex = nextIndex
-        let url = playlist[nextIndex].url
+    /// The renderer is playing `fileURL`, which isn't the track the UI shows.
+    /// Jump the UI to that playlist entry and queue the track after it — no
+    /// transport commands, since the renderer is already playing it.
+    private func handleUPnPRendererTrackChange(to fileURL: URL) {
+        guard let index = playlist.firstIndex(where: { $0.url == fileURL }) else { return }
+        print("[upnp] renderer is on track \(index + 1); syncing display")
+        currentTrackIndex = index
+        let url = fileURL
 
         loadGeneration += 1
         let generation = loadGeneration
