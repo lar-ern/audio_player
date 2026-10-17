@@ -742,13 +742,20 @@ final class UPnPOutputManager: ObservableObject {
     // SetNextAVTransportURI, so it can transition on its own without a gap.
     private var nextQueued: (uri: String, duration: TimeInterval, fileURL: URL)? = nil
     private var serverPathCounter = 0
+    // Every URI we've handed the renderer, mapped back to its file, so the
+    // URI the renderer reports can be turned into a playlist track.
+    private var uriToFile: [String: URL] = [:]
+    // True while play() is switching the renderer to a new track. Until the
+    // renderer has the new URI it still reports the old one, which must not
+    // be mistaken for the renderer jumping back.
+    private var playInFlight = false
 
     // Completion callback (mirrors AudioEngine)
     var onPlaybackFinished: (() -> Void)?
-    // Fired when the renderer transitioned to the queued next track by itself
-    // (gapless advance) — the UI should move to the next playlist entry
-    // WITHOUT sending any transport commands.
-    var onTrackAdvanced: (() -> Void)?
+    // Fired when the renderer is found playing a different file than the app
+    // thinks is current (gapless advance, skip, or a missed transition). The
+    // UI should jump to that file WITHOUT sending any transport commands.
+    var onRendererTrackChanged: ((URL) -> Void)?
     // Fired when the renderer stopped well short of the track's end — a
     // streaming stall rather than a natural finish. The manager should
     // restart the current track.
@@ -807,6 +814,9 @@ final class UPnPOutputManager: ObservableObject {
         guard let transport = transport else { throw UPnPError.noDeviceSelected }
         guard serverStarted else { throw UPnPError.serverNotRunning }
 
+        await MainActor.run { self.playInFlight = true }
+        defer { DispatchQueue.main.async { [weak self] in self?.playInFlight = false } }
+
         // Only stop if we know the renderer is already playing — avoids a
         // cold SOAP round-trip on first play when the renderer is idle.
         if remotelyPlaying { try? await transport.stop() }
@@ -851,7 +861,9 @@ final class UPnPOutputManager: ObservableObject {
         let ext  = fileURL.pathExtension
         let path = "/track\(serverPathCounter)" + (ext.isEmpty ? "" : "." + ext)
         httpServer.registerFile(fileURL, at: path)
-        return "http://\(ip):\(httpServer.port)\(path)"
+        let uri = "http://\(ip):\(httpServer.port)\(path)"
+        DispatchQueue.main.async { [weak self] in self?.uriToFile[uri] = fileURL }
+        return uri
     }
 
     /// Hand the next playlist track to the renderer via SetNextAVTransportURI so
@@ -978,28 +990,30 @@ final class UPnPOutputManager: ObservableObject {
             let effectiveDuration = rendererDuration > 0 ? rendererDuration : trackDuration
             let elapsed = Date().timeIntervalSince(pollingStartedAt)
             let effectivePosition = info.position > 0 ? info.position : elapsed
-            let nearEnd = effectiveDuration > 0 && effectivePosition >= effectiveDuration - 4.0
-
-            // Gapless transition check: only advance when the renderer PROVABLY
-            // switched to the queued URI (TrackURI or GetMediaInfo CurrentURI).
-            // Time-based guessing re-queued over an unconsumed NextURI and made
-            // the renderer skip tracks.
-            if nearEnd, let next = nextQueued {
-                var advanced = !info.uri.isEmpty && info.uri == next.uri
-                if !advanced, let media = try? await transport.getMediaInfo() {
-                    advanced = media.currentURI == next.uri
-                }
-                if advanced {
-                    nextQueued = nil
-                    currentFileURL = next.fileURL
-                    trackDuration = next.duration
-                    rendererPosition = 0
-                    rendererDuration = 0
-                    pollingStartedAt = Date()
-                    lastPositionUpdateTime = Date()
-                    onTrackAdvanced?()
-                    return
-                }
+            // The renderer is the source of truth for which track is playing.
+            // Ask it every poll and follow it to whatever file it reports, so
+            // the display can't fall out of sync, whether the renderer moved to
+            // the queued track, skipped, or a transition was missed earlier.
+            var rendererURI = info.uri
+            if rendererURI.isEmpty || uriToFile[rendererURI] == nil,
+               let media = try? await transport.getMediaInfo() {
+                rendererURI = media.currentURI
+            }
+            if !playInFlight,
+               let file = uriToFile[rendererURI],
+               file != currentFileURL {
+                let duration = (nextQueued?.uri == rendererURI) ? nextQueued!.duration : 0
+                // Whatever was queued is either consumed or no longer the right
+                // next track; the manager re-queues from the new position.
+                nextQueued = nil
+                currentFileURL = file
+                trackDuration = duration
+                rendererPosition = 0
+                rendererDuration = 0
+                pollingStartedAt = Date()
+                lastPositionUpdateTime = Date()
+                onRendererTrackChanged?(file)
+                return
             }
 
             // Stop handling. sawPlaying gates it so the brief STOPPED that some
